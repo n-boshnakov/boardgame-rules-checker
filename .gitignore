@@ -1,3 +1,8 @@
+# Ignore all data (raw, processed, indices, etc.)
+data/
+
+# Ignore implementation plan documentation
+Implementation_Plan*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
