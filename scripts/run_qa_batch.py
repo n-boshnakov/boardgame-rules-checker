@@ -103,16 +103,55 @@ for idx, row in enumerate(rows, 1):
             if len(sent) < 10:
                 continue
             score = hybrid_score(question, sent)
-            candidates.append((score, sent))
+            candidates.append((score, sent, chunk))
         # Also consider the whole chunk as a candidate
         if len(chunk.strip()) >= 10:
             score = hybrid_score(question, chunk)
-            candidates.append((score, chunk))
+            candidates.append((score, chunk, chunk))
     
-    # Always select the best candidate, even if penalized
+    # Select best answer by extracting multiple relevant sentences
     if candidates:
         candidates.sort(key=lambda x: x[0], reverse=True)
-        best_sent = candidates[0][1]
+        
+        # Get the best scored sentence and its source chunk
+        best_score, best_sent, source_chunk = candidates[0]
+        
+        # Extract context: find the best sentence in its chunk and include surrounding sentences
+        answer_sentences = []
+        chunk_sentences = re.split(r'(?<=[.!?])\s+', source_chunk)
+        
+        # Find where the best sentence appears in the chunk
+        best_sent_idx = -1
+        for i, sent in enumerate(chunk_sentences):
+            if best_sent.strip() in sent.strip() or sent.strip() in best_sent.strip():
+                best_sent_idx = i
+                break
+        
+        if best_sent_idx >= 0:
+            # Include the best sentence plus surrounding context (1 before, 2 after)
+            start_idx = max(0, best_sent_idx - 1)
+            end_idx = min(len(chunk_sentences), best_sent_idx + 3)
+            
+            for i in range(start_idx, end_idx):
+                sent = chunk_sentences[i].strip()
+                if len(sent) >= 10:
+                    # Skip if it's a section header
+                    if sent not in section_headers:
+                        answer_sentences.append(sent)
+        else:
+            # Fallback: use the best sentence
+            answer_sentences = [best_sent]
+        
+        # Combine sentences into coherent answer (max 3-4 sentences)
+        best_sent = ' '.join(answer_sentences[:4])
+        
+        # If answer is too long, try to trim to most relevant sentences
+        if len(best_sent) > 800:
+            # Re-score each sentence and keep only top 3
+            scored_sents = [(hybrid_score(question, s), s) for s in answer_sentences[:4]]
+            scored_sents.sort(key=lambda x: x[0], reverse=True)
+            best_sent = ' '.join([s for _, s in scored_sents[:3]])
+            
     elif answer_chunks:
         # If no valid sentences, use the first non-empty chunk
         best_sent = next((chunk for chunk in answer_chunks if chunk.strip()), answer_chunks[0] if answer_chunks else "[No answer found]")
