@@ -243,47 +243,263 @@ def chunk_text_with_overlap(text: str, max_chars: int = 2000, overlap_chars: int
     return chunks
 
 
-def group_related_paragraphs(paragraphs: List[Dict]) -> List[Dict]:
-    """
-    Groups consecutive small paragraphs into larger logical chunks.
-    Helps to keep related sentences and short paragraphs together before chunking.
-    """
-    grouped = []
-    temp_text = ""
-    temp_page = -1
+def is_all_caps_section(text: str) -> bool:
+    """Check if text is an ALL CAPS section heading."""
+    if not text or len(text) > 100:
+        return False
     
-    for para_info in paragraphs:
-        text = para_info['text']
+    # Filter out card names and game component descriptions
+    card_keywords = [
+        'GRENADE', 'BLAST', 'CHEMICAL', 'MEDICINE', 'ARTIFACT', 'CONTAINER',
+        'WEAPON', 'SHOTGUN', 'RIFLE', 'PISTOL', 'HUMAN', 'MUTANT', 'PSIONIC',
+        'GRAVITATIONAL', 'IMPROVED', 'ADVANCED', 'BANDIT', 'CONTROLLER',
+        'ATTACK SEQUENCE', 'ENEMY ACTIVATION', 'ATTENTION ON THE MAP'
+    ]
+    
+    text_upper = text.upper()
+    for keyword in card_keywords:
+        if keyword in text_upper:
+            return False
+    
+    # Remove punctuation and numbers for checking
+    text_clean = re.sub(r'[^\w\s]', '', text)
+    words = text_clean.split()
+    
+    if not words or len(words) > 15:
+        return False
+    
+    # Must be all uppercase and at least 2 words
+    if len(words) < 2:
+        return False
+    
+    return all(w.isupper() and len(w) >= 2 for w in words)
+
+
+def is_title_case_heading(text: str) -> bool:
+    """Check if text is a Title Case heading (subsection)."""
+    if not text or len(text) > 150:
+        return False
+    
+    # Must be a single line or very short
+    if '\n' in text.strip():
+        return False
+    
+    words = text.split()
+    if len(words) > 20 or len(words) < 2:
+        return False
+    
+    # Skip if it contains colons (likely credits like "Design: Name")
+    if ':' in text:
+        return False
+    
+    # Skip if ends with comma or "and" (likely list items)
+    if text.strip().endswith(',') or text.strip().endswith('and'):
+        return False
+    
+    # Title case: most significant words start with uppercase
+    significant_words = [w for w in words if len(w) > 2]
+    if not significant_words:
+        return False
+    
+    capitalized = sum(1 for w in significant_words if w[0].isupper())
+    
+    # At least 70% of significant words must be capitalized
+    # AND not all caps (that would be a section heading)
+    is_title = capitalized >= len(significant_words) * 0.7
+    not_all_caps = not is_all_caps_section(text)
+    
+    return is_title and not_all_caps
+
+
+def should_skip_example(text: str) -> bool:
+    """
+    Check if text is an Example paragraph that should be skipped.
+    Returns True if the paragraph starts with 'Example:' and should be skipped.
+    
+    Note: Complex case handling is commented out - when important text follows
+    an Example paragraph on the same line or block, we need more sophisticated
+    parsing to distinguish example content from following important content.
+    """
+    # Simple case: paragraph starts with "Example:"
+    if text.strip().startswith("Example:"):
+        return True
+    
+    # Check if any sentence in the paragraph starts with Example:
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    for sent in sentences:
+        if sent.strip().startswith("Example:"):
+            return True
+    
+    return False
+
+
+def has_substantial_content_after(paragraphs: List[Dict], current_idx: int, min_sentences: int = 1) -> bool:
+    """
+    Check if there's substantial content (at least min_sentences) after the current index.
+    This helps filter out image captions and card names that aren't real section headings.
+    
+    Changed to min_sentences=1 to be less aggressive and allow shorter subsections.
+    """
+    if current_idx >= len(paragraphs) - 1:
+        return False
+    
+    # Look at the next paragraph
+    next_para = paragraphs[current_idx + 1]['text'].strip()
+    
+    # Skip if next is empty
+    if not next_para:
+        return False
+    
+    # Allow if next is a Title Case heading (subsections often follow sections)
+    if is_title_case_heading(next_para):
+        return True
+    
+    # Skip if next is also an ALL CAPS section
+    if is_all_caps_section(next_para):
+        return False
+    
+    # Count sentences in the next paragraph
+    sentences = re.split(r'(?<=[.!?])\s+', next_para)
+    substantial_sentences = [s for s in sentences if len(s.split()) >= 5]
+    
+    return len(substantial_sentences) >= min_sentences
+
+
+def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
+    """
+    New section-based chunking logic:
+    1. Find ALL CAPS section headings and use as current section
+    2. Find Title Case subsection headings and start new chunks
+    3. Skip Example paragraphs
+    4. Group related content under the same subsection
+    5. Validate headings have substantial content after them (not just image captions)
+    """
+    chunks = []
+    current_section = None
+    current_subsection = None
+    current_chunk_text = []
+    current_page = None
+    
+    # Credits/component list detection patterns
+    credits_patterns = [
+        r"narrative\s+design:", r"writing:", r"proofreading:", r"graphic\s+design:",
+        r"illustrations?:", r"3d\s+modelling:", r"dtp:", r"production:",
+        r"tests?\s+and\s+development:", r"internal\s+testing:",
+        r"based\s+on:", r"dedicated\s+to"
+    ]
+    credits_regex = re.compile("|".join(credits_patterns), re.IGNORECASE)
+    
+    in_credits_section = False
+    in_components_section = False
+    
+    for idx, para_info in enumerate(paragraphs):
+        text = para_info['text'].strip()
         page = para_info['page']
         
-        # If the paragraph is a potential section header, process previous text and start new group
-        if len(text.split()) < 10 and (text.isupper() or text.istitle()):
-            if temp_text:
-                grouped.append({'text': temp_text, 'page': temp_page})
-            grouped.append(para_info)
-            temp_text = ""
+        if not text:
             continue
-
-        if not temp_text:
-            # Start a new group
-            temp_text = text
-            temp_page = page
-        elif page == temp_page and (len(temp_text) + len(text)) < 6000:
-            # Combine with previous paragraph if on the same page and within size limits
-            temp_text += "\n\n" + text
-        else:
-            # Page changed or size limit reached, finalize the current group
-            grouped.append({'text': temp_text, 'page': temp_page})
-            # Start a new group with the current paragraph
-            temp_text = text
-            temp_page = page
-            
-    # Add the last remaining group
-    if temp_text:
-        grouped.append({'text': temp_text, 'page': temp_page})
         
-    print(f"[Parser] Grouped {len(paragraphs)} paragraphs into {len(grouped)} logical blocks.")
-    return grouped
+        # Check if we're entering credits or components section
+        if credits_regex.search(text.lower()):
+            in_credits_section = True
+            print(f"[Parser] Entering credits section on page {page}")
+            continue
+        
+        if re.search(r"component\s*list|game\s*components", text.lower()):
+            in_components_section = True
+            print(f"[Parser] Entering components section on page {page}")
+            continue
+        
+        # Skip if in credits or components section
+        if in_credits_section or in_components_section:
+            # Check if we've left these sections (new ALL CAPS section found)
+            if is_all_caps_section(text) and len(text.split()) >= 2:
+                in_credits_section = False
+                in_components_section = False
+                print(f"[Parser] Exiting credits/components section")
+            else:
+                continue
+        
+        # Skip Example paragraphs
+        if should_skip_example(text):
+            print(f"[Parser] Skipping Example paragraph on page {page}")
+            continue
+        
+        # Check if this is an ALL CAPS section heading (with content validation)
+        if is_all_caps_section(text):
+            # Validate that this is a real section heading, not an image caption
+            if not has_substantial_content_after(paragraphs, idx):
+                print(f"[Parser] Skipping potential image caption (no content after): {text[:50]}")
+                # Treat as regular content instead
+                if current_page is None:
+                    current_page = page
+                current_chunk_text.append(text)
+                continue
+            
+            # Save previous chunk if exists
+            if current_chunk_text:
+                chunk_text = '\n\n'.join(current_chunk_text)
+                chunks.append({
+                    'text': chunk_text,
+                    'page': current_page,
+                    'section': current_section,
+                    'subsection': current_subsection
+                })
+                current_chunk_text = []
+            
+            # Update section
+            current_section = text
+            current_subsection = None
+            current_page = page
+            print(f"[Parser] Found section heading: {text.encode('ascii', errors='replace').decode('ascii')}")
+            continue
+        
+        # Check if this is a Title Case subsection heading (with content validation)
+        if is_title_case_heading(text):
+            # Validate that this is a real subsection heading, not an image caption
+            if not has_substantial_content_after(paragraphs, idx):
+                print(f"[Parser] Skipping potential image caption (no content after): {text[:50]}")
+                # Treat as regular content instead
+                if current_page is None:
+                    current_page = page
+                current_chunk_text.append(text)
+                continue
+            
+            # Save previous chunk if exists (this is the main section content or previous subsection)
+            if current_chunk_text:
+                chunk_text = '\n\n'.join(current_chunk_text)
+                chunks.append({
+                    'text': chunk_text,
+                    'page': current_page,
+                    'section': current_section,
+                    'subsection': current_subsection
+                })
+            
+            # Start new chunk for this subsection (include the subsection heading in the chunk text)
+            current_subsection = text
+            current_chunk_text = [text]
+            current_page = page
+            print(f"[Parser] Found subsection heading: {text.encode('ascii', errors='replace').decode('ascii')}")
+            continue
+        
+        # Regular content - add to current chunk
+        if current_page is None:
+            current_page = page
+        
+        current_chunk_text.append(text)
+    
+    # Add final chunk
+    if current_chunk_text:
+        chunk_text = '\n\n'.join(current_chunk_text)
+        chunks.append({
+            'text': chunk_text,
+            'page': current_page,
+            'section': current_section,
+            'subsection': current_subsection
+        })
+    
+    print(f"[Parser] Created {len(chunks)} section-based chunks from {len(paragraphs)} paragraphs")
+    return chunks
 
 
 def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_chars: int = 5000, overlap_chars: int = 500) -> List[Dict]:
@@ -307,11 +523,19 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
     skip_patterns = [
         r"table of contents", r"contents", r"^\s*thank you", r"special thanks", r"credits", r"designed by", r"illustrated by",
         r"advertisement", r"visit our website", r"customer service", r"all rights reserved", r"contact\s*us", r"customer\s*support|technical\s*support|spiritual\s*support",
-        r"^components$", r"^game components$", r"^box contents$", r"^in the box$", r"^component list$", r"^you should have$", r"^this game includes$",
+        r"component list", r"components", r"^game components$", r"^box contents$", r"^in the box$", r"^you should have$", r"^this game includes$",
         # Enhanced TOC detection
         r"^\s*table\s+of\s+contents\s*$", r"^\s*contents\s*$",
         r"page\s+\d+", r"\.\s*\.\s*\.\s*\d+",  # Page number patterns in TOC
         r"^\d+\s*$",  # Standalone page numbers
+        # Credits section patterns
+        r"narrative\s+design:", r"writing:", r"proofreading:", r"graphic\s+design:",
+        r"illustrations?:", r"3d\s+modelling:", r"dtp:", r"production:",
+        r"tests?\s+and\s+development:", r"internal\s+testing:",
+        r"rulebook\s+&\s+gameplay", r"game\s+world\s+team:",
+        r"based\s+on:", r"dedicated\s+to",
+        # Component list patterns
+        r"^\d+x\s+", r"^\d+\s+x\s+", r"quantity", r"component\s+type"
     ]
     skip_regex = re.compile("|".join(skip_patterns), re.IGNORECASE)
     
@@ -323,7 +547,8 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
 
     from datetime import datetime
     dt_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    corrections_csv_path = f"data/processed/corrections_{dt_str}.csv"
+    corrections_csv_path = "data/processed/corrections.csv"
+    corrections_archive_path = f"data/processed/archive/corrections_{dt_str}.csv"
     unique_terms_path = "data/processed/unique_terms.csv"
     word_fragments_path = "data/processed/word_fragments.csv"
     section_headers = set()
@@ -383,13 +608,13 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
         for para in text.split("\n\n"):
             clean_para = para.strip()
             
-            # Skip very short paragraphs
-            if len(clean_para) < 50:
+            # Skip very short paragraphs (but not too aggressively)
+            if len(clean_para) < 20:
                 continue
             
             # Skip sections matching skip patterns
             if skip_regex.search(clean_para):
-                print(f"[Parser] Skipping paragraph (matched skip pattern): {clean_para[:60]}...")
+                print(f"[Parser] Skipping paragraph (matched skip pattern): {clean_para[:60].encode('ascii', errors='replace').decode('ascii')}...")
                 continue
             
             # Enhanced TOC detection: skip paragraphs with dotted lines and page numbers
@@ -397,19 +622,15 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
                 print(f"[Parser] Skipping TOC entry: {clean_para[:60]}...")
                 continue
             
-            # Skip all-uppercase text (likely titles)
-            if len(clean_para) > 20 and clean_para == clean_para.upper():
-                continue
-            
             # Skip page numbers
             if re.fullmatch(r"\d{1,3}", clean_para):
                 continue
 
+            # Don't skip section headers anymore - we need them for section-based chunking
+            # Just collect them for later reference
             first_line = clean_para.split("\n")[0].strip()
-            # Collect likely section headers for later filtering
             if (len(first_line) <= 40 and (first_line.isupper() or sum(1 for c in first_line if c.isupper()) > 3)):
                 section_headers.add(first_line)
-                continue
             
             # Detect and format tables
             clean_para = detect_and_format_table(clean_para)
@@ -421,47 +642,40 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
     
     print(f"[Parser] Extracted {len(all_paragraphs)} paragraphs from {len(doc)} pages")
 
-    # Group related paragraphs together
-    grouped_paragraphs = group_related_paragraphs(all_paragraphs)
+    # Apply new section-based chunking logic
+    section_chunks = chunk_by_sections(all_paragraphs)
     
-    # Second pass: spellcheck and chunk all grouped paragraphs
-    for idx, para_info in enumerate(grouped_paragraphs):
-        clean_para = para_info['text']
-        page_num = para_info['page']
+    # Second pass: spellcheck each section chunk
+    for idx, chunk_info in enumerate(section_chunks):
+        chunk_text = chunk_info['text']
+        page_num = chunk_info['page']
+        section = chunk_info.get('section', 'Unknown')
+        subsection = chunk_info.get('subsection')
         
-        # Spellcheck the paragraph
+        # Spellcheck the chunk
         spell_result = correct_spelling(
-            clean_para,
+            chunk_text,
             generate_corrections_file=True,
             corrections_output_path=corrections_csv_path,
             unique_terms_file=unique_terms_path,
             word_fragments_file=word_fragments_path
         )
-        print(f"[Parser] Spellchecked paragraph {idx+1}/{len(grouped_paragraphs)} (page {page_num}): {clean_para[:40]}...")
+        print(f"[Parser] Spellchecked chunk {idx+1}/{len(section_chunks)} (page {page_num}, section: {section}): {chunk_text[:40]}...")
         corrected_text = spell_result['corrected_text'] if isinstance(spell_result, dict) else spell_result
 
-        # Extract section from content
-        section = extract_section_from_content(corrected_text, current_section)
-        if section:
-            current_section = section
-        
-        # Chunk the paragraph if it's too long
-        text_chunks = chunk_text_with_overlap(corrected_text, max_chunk_chars, overlap_chars)
-        
-        # Create a chunk entry for each sub-chunk
-        for chunk_idx, chunk_text in enumerate(text_chunks):
-            chunk = {
-                "text": chunk_text,
-                "page": page_num,
-                "section": current_section,
-                "doc_type": doc_type,
-                "chunk_index": chunk_idx,
-                "total_chunks": len(text_chunks),
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            chunks.append(chunk)
+        # Create final chunk entry
+        chunk = {
+            "text": corrected_text,
+            "page": page_num,
+            "section": section,
+            "subsection": subsection,
+            "doc_type": doc_type,
+            "chunk_index": idx,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        chunks.append(chunk)
     
-    print(f"[Parser] Created {len(chunks)} total chunks from {len(grouped_paragraphs)} logical blocks")
+    print(f"[Parser] Created {len(chunks)} total chunks from {len(section_chunks)} section-based chunks")
     
     # Save section headers for answer filtering
     import os
@@ -474,7 +688,15 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
     # Deduplicate and sort corrections file at the end
     from spellcheck_utils import correct_spelling as _cs
     _cs('', generate_corrections_file=True, corrections_output_path=corrections_csv_path, unique_terms_file=unique_terms_path, word_fragments_file=word_fragments_path, deduplicate_corrections=True)
-    
+
+    # Archive a timestamped copy of the deduplicated corrections file
+    import shutil
+    try:
+        shutil.copyfile(corrections_csv_path, corrections_archive_path)
+        print(f"[Parser] Archived corrections file to {corrections_archive_path}")
+    except Exception as e:
+        print(f"[Parser] Could not archive corrections file: {e}")
+
     # Learn OCR patterns from corrections and update configuration
     try:
         from ocr_learning import update_ocr_corrections_from_learning

@@ -1,6 +1,7 @@
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from sentence_transformers import SentenceTransformer, CrossEncoder, util
 from elasticsearch import Elasticsearch
 import numpy as np
+import re
 from typing import List, Dict, Optional
 
 ES_INDEX = "rulebook_chunks"
@@ -151,6 +152,160 @@ class RulebookRetriever:
         # Sort by cross-encoder score
         chunks.sort(key=lambda x: x['score'], reverse=True)
         return chunks
+    
+    def generate_answer(self, question: str, chunks: List[Dict], multi_chunk_synthesis: bool = True) -> str:
+        """
+        Generate answer from retrieved chunks using multi-chunk synthesis.
+        Same logic as run_qa_batch.py for consistency.
+        """
+        if not chunks:
+            return "No relevant information found."
+        
+        question_embedding = self.model.encode(question, convert_to_tensor=True)
+        question_keywords = set(question.lower().split())
+        
+        # Load section headers to filter them out
+        section_headers = set()
+        try:
+            with open("data/processed/section_headers.txt", "r", encoding="utf-8") as f:
+                section_headers = {line.strip() for line in f}
+        except FileNotFoundError:
+            pass
+        
+        all_candidates = []
+        
+        # Process top 10 chunks for multi-chunk synthesis to handle ES ranking variability
+        # (ensures best chunks are captured even if ranking fluctuates)
+        chunks_to_process = chunks[:10] if multi_chunk_synthesis else chunks[:1]
+        
+        for chunk_rank, chunk in enumerate(chunks_to_process):
+            text = chunk['text']
+            sentences = re.split(r'(?<=[.!?])\s+', text)
+            
+            if not sentences:
+                continue
+            
+            sentence_embeddings = self.model.encode(sentences, convert_to_tensor=True)
+            cosine_scores = util.pytorch_cos_sim(question_embedding, sentence_embeddings)[0]
+            
+            # Calculate section relevance boost
+            section_boost = 0
+            if chunk.get('section'):
+                section_keywords = set(chunk['section'].lower().split())
+                common_keywords = question_keywords.intersection(section_keywords)
+                if common_keywords:
+                    section_boost = 0.1 * len(common_keywords)
+            
+            # Give slight advantage to sentences from higher-ranked chunks
+            rank_boost = 0.05 * (10 - chunk_rank) / 10 if multi_chunk_synthesis else 0
+            
+            for i, sentence in enumerate(sentences):
+                # Skip section headers or too-short sentences
+                if sentence.strip() in section_headers or len(sentence.split()) < 4:
+                    continue
+                
+                # Hybrid score
+                semantic_score = cosine_scores[i].item()
+                
+                # Penalties
+                penalty = 0
+                if len(sentence.split()) < 5:
+                    penalty += 0.1
+                if sentence.isupper() and len(sentence.split()) < 10:
+                    penalty += 0.2
+                
+                final_score = semantic_score + section_boost + rank_boost - penalty
+                
+                all_candidates.append({
+                    "score": final_score,
+                    "sentence": sentence,
+                    "index": i,
+                    "sentences": sentences,
+                    "chunk": chunk,
+                    "chunk_rank": chunk_rank
+                })
+        
+        # Sort all candidates by score
+        sorted_candidates = sorted(all_candidates, key=lambda x: x['score'], reverse=True)
+        
+        if not sorted_candidates:
+            return "No relevant information found."
+        
+        best_candidate = sorted_candidates[0]
+        highest_score = best_candidate['score']
+        
+        if multi_chunk_synthesis:
+            # Multi-chunk synthesis: extract relevant sentences from multiple chunks
+            relevance_threshold = highest_score * 0.35  # Lower threshold for better coverage
+            
+            answer_sentences = []
+            seen_sentences = set()
+            
+            for candidate in sorted_candidates:
+                if candidate['score'] >= relevance_threshold:
+                    sentence_text = candidate['sentence'].strip()
+                    
+                    # Deduplicate
+                    is_duplicate = False
+                    sentence_lower = sentence_text.lower()
+                    for seen in seen_sentences:
+                        words1 = set(sentence_lower.split())
+                        words2 = set(seen.lower().split())
+                        if len(words1.intersection(words2)) / len(words1.union(words2)) > 0.8:
+                            is_duplicate = True
+                            break
+                    
+                    if not is_duplicate and len(sentence_text.split()) > 4:
+                        answer_sentences.append(sentence_text)
+                        seen_sentences.add(sentence_text)
+                        
+                        # Limit to 10 sentences for comprehensive coverage (increased from 8)
+                        if len(answer_sentences) >= 10:
+                            break
+            
+            # Ensure minimum answer length
+            if len(answer_sentences) < 5:
+                # Fall back to extracting from best chunk with context
+                best_index = best_candidate['index']
+                sentences = best_candidate['sentences']
+                start_idx = max(0, best_index - 1)
+                end_idx = min(len(sentences), best_index + 3)
+                answer_sentences = [s.strip() for s in sentences[start_idx:end_idx] 
+                                  if len(s.split()) > 3]
+            
+            best_answer = " ".join(answer_sentences)
+        else:
+            # Single-chunk extraction
+            best_index = best_candidate['index']
+            sentences = best_candidate['sentences']
+            
+            relevance_threshold = highest_score * 0.5
+            chunk_candidates = [c for c in sorted_candidates 
+                               if c['sentences'] is sentences 
+                               and c['score'] >= relevance_threshold]
+            
+            relevant_indices = {c['index'] for c in chunk_candidates}
+            answer_indices = {best_index}
+            
+            for i in range(best_index - 1, max(0, best_index - 3), -1):
+                if i in relevant_indices or len(answer_indices) < 3:
+                    answer_indices.add(i)
+                else:
+                    break
+            
+            for i in range(best_index + 1, min(len(sentences), best_index + 5)):
+                if i in relevant_indices or len(answer_indices) < 4:
+                    answer_indices.add(i)
+                else:
+                    break
+            
+            sorted_indices = sorted(answer_indices)
+            context_sentences = [sentences[i] for i in sorted_indices if len(sentences[i].split()) > 3]
+            best_answer = " ".join(s.strip() for s in context_sentences)
+        
+        # Clean up artifacts
+        best_answer = re.sub(r'\s+', ' ', best_answer).strip()
+        return best_answer
 
 if __name__ == "__main__":
     import sys
@@ -160,15 +315,34 @@ if __name__ == "__main__":
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     if len(sys.argv) < 2:
         print("Usage: python retriever.py <query> [section] [es_host] [search_type] [hybrid_weight]")
-        print("search_type: 'vector' (default), 'keyword', or 'hybrid'")
-        print("hybrid_weight: float between 0.0 and 1.0 (default 0.5, only for hybrid)")
+        print("search_type: 'vector', 'keyword', or 'hybrid' (default)")
+        print("hybrid_weight: float between 0.0 and 1.0 (default 0.7, only for hybrid)")
         exit(1)
     query = sys.argv[1]
     section = sys.argv[2] if len(sys.argv) > 2 else None
     es_host = sys.argv[3] if len(sys.argv) > 3 else "http://localhost:9200"
     search_type = sys.argv[4] if len(sys.argv) > 4 else "hybrid"
-    hybrid_weight = float(sys.argv[5]) if len(sys.argv) > 5 else 0.5
-    retriever = RulebookRetriever(es_host)
-    results = retriever.search(query, section, search_type=search_type, hybrid_weight=hybrid_weight)
-    for i, r in enumerate(results, 1):
-        print(f"--- Result {i} (score={r['score']:.3f}) ---\nSection: {r['section']}\nPage: {r['page']}\nText: {r['text'][:300]}\n")
+    hybrid_weight = float(sys.argv[5]) if len(sys.argv) > 5 else 0.7
+    
+    retriever = RulebookRetriever(es_host, use_reranker=False)  # Disable cross-encoder reranking
+    results = retriever.search(query, section, top_k=10, search_type=search_type, hybrid_weight=hybrid_weight)
+    
+    print("="*80)
+    print(f"QUESTION: {query}")
+    print("="*80)
+    
+    # Generate answer using multi-chunk synthesis
+    answer = retriever.generate_answer(query, results, multi_chunk_synthesis=True)
+    print(f"\nGENERATED ANSWER:")
+    print("-"*80)
+    print(answer)
+    print("-"*80)
+    
+    print(f"\nRETRIEVED CHUNKS (top 5 of 10):")
+    print("="*80)
+    for i, r in enumerate(results[:5], 1):
+        print(f"\n--- Chunk {i} (score={r['score']:.3f}) ---")
+        print(f"Section: {r.get('section', 'N/A')}")
+        print(f"Page: {r.get('page', 'N/A')}")
+        print(f"Text: {r['text'][:300]}...")
+        print()
