@@ -243,6 +243,49 @@ def chunk_text_with_overlap(text: str, max_chars: int = 2000, overlap_chars: int
     return chunks
 
 
+def group_related_paragraphs(paragraphs: List[Dict]) -> List[Dict]:
+    """
+    Groups consecutive small paragraphs into larger logical chunks.
+    Helps to keep related sentences and short paragraphs together before chunking.
+    """
+    grouped = []
+    temp_text = ""
+    temp_page = -1
+    
+    for para_info in paragraphs:
+        text = para_info['text']
+        page = para_info['page']
+        
+        # If the paragraph is a potential section header, process previous text and start new group
+        if len(text.split()) < 10 and (text.isupper() or text.istitle()):
+            if temp_text:
+                grouped.append({'text': temp_text, 'page': temp_page})
+            grouped.append(para_info)
+            temp_text = ""
+            continue
+
+        if not temp_text:
+            # Start a new group
+            temp_text = text
+            temp_page = page
+        elif page == temp_page and (len(temp_text) + len(text)) < 6000:
+            # Combine with previous paragraph if on the same page and within size limits
+            temp_text += "\n\n" + text
+        else:
+            # Page changed or size limit reached, finalize the current group
+            grouped.append({'text': temp_text, 'page': temp_page})
+            # Start a new group with the current paragraph
+            temp_text = text
+            temp_page = page
+            
+    # Add the last remaining group
+    if temp_text:
+        grouped.append({'text': temp_text, 'page': temp_page})
+        
+    print(f"[Parser] Grouped {len(paragraphs)} paragraphs into {len(grouped)} logical blocks.")
+    return grouped
+
+
 def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_chars: int = 5000, overlap_chars: int = 500) -> List[Dict]:
     """
     Parses a PDF rulebook and returns a list of chunks with metadata.
@@ -262,11 +305,19 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
     doc = fitz.open(pdf_path)
     chunks = []
     skip_patterns = [
-        r"table of contents", r"contents", r"thank you", r"thanks", r"credits", r"designed by", r"illustrated by",
-        r"advertisement", r"visit our website", r"customer service", r"all rights reserved", r"contact", r"support",
-        r"^components$", r"^game components$", r"^box contents$", r"^in the box$", r"^component list$", r"^you should have$", r"^this game includes$"
+        r"table of contents", r"contents", r"^\s*thank you", r"special thanks", r"credits", r"designed by", r"illustrated by",
+        r"advertisement", r"visit our website", r"customer service", r"all rights reserved", r"contact\s*us", r"customer\s*support|technical\s*support|spiritual\s*support",
+        r"^components$", r"^game components$", r"^box contents$", r"^in the box$", r"^component list$", r"^you should have$", r"^this game includes$",
+        # Enhanced TOC detection
+        r"^\s*table\s+of\s+contents\s*$", r"^\s*contents\s*$",
+        r"page\s+\d+", r"\.\s*\.\s*\.\s*\d+",  # Page number patterns in TOC
+        r"^\d+\s*$",  # Standalone page numbers
     ]
     skip_regex = re.compile("|".join(skip_patterns), re.IGNORECASE)
+    
+    # Track if we're in a TOC section (usually first few pages)
+    in_toc_section = False
+    toc_page_limit = 3  # Usually TOC is within first 3 pages
     
     current_section = None
 
@@ -282,6 +333,12 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
     
     for page_num in range(len(doc)):
         page = doc[page_num]
+        
+        # Check if we're potentially in TOC section
+        if page_num < toc_page_limit:
+            in_toc_section = True
+        else:
+            in_toc_section = False
         
         # Use layout-aware text extraction with "dict" mode
         # This preserves text blocks and their positioning
@@ -332,6 +389,12 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
             
             # Skip sections matching skip patterns
             if skip_regex.search(clean_para):
+                print(f"[Parser] Skipping paragraph (matched skip pattern): {clean_para[:60]}...")
+                continue
+            
+            # Enhanced TOC detection: skip paragraphs with dotted lines and page numbers
+            if in_toc_section and (re.search(r'\.\s*\.\s*\.', clean_para) or re.search(r'\s*\d+\s*$', clean_para)):
+                print(f"[Parser] Skipping TOC entry: {clean_para[:60]}...")
                 continue
             
             # Skip all-uppercase text (likely titles)
@@ -357,9 +420,12 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
             })
     
     print(f"[Parser] Extracted {len(all_paragraphs)} paragraphs from {len(doc)} pages")
+
+    # Group related paragraphs together
+    grouped_paragraphs = group_related_paragraphs(all_paragraphs)
     
-    # Second pass: spellcheck and chunk all paragraphs
-    for idx, para_info in enumerate(all_paragraphs):
+    # Second pass: spellcheck and chunk all grouped paragraphs
+    for idx, para_info in enumerate(grouped_paragraphs):
         clean_para = para_info['text']
         page_num = para_info['page']
         
@@ -371,7 +437,7 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
             unique_terms_file=unique_terms_path,
             word_fragments_file=word_fragments_path
         )
-        print(f"[Parser] Spellchecked paragraph {idx+1}/{len(all_paragraphs)} (page {page_num}): {clean_para[:40]}...")
+        print(f"[Parser] Spellchecked paragraph {idx+1}/{len(grouped_paragraphs)} (page {page_num}): {clean_para[:40]}...")
         corrected_text = spell_result['corrected_text'] if isinstance(spell_result, dict) else spell_result
 
         # Extract section from content
@@ -395,7 +461,7 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
             }
             chunks.append(chunk)
     
-    print(f"[Parser] Created {len(chunks)} total chunks from {len(all_paragraphs)} paragraphs")
+    print(f"[Parser] Created {len(chunks)} total chunks from {len(grouped_paragraphs)} logical blocks")
     
     # Save section headers for answer filtering
     import os

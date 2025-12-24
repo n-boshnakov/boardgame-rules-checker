@@ -1,13 +1,14 @@
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from elasticsearch import Elasticsearch
 import numpy as np
 from typing import List, Dict, Optional
 
 ES_INDEX = "rulebook_chunks"
 MODEL_NAME = "all-MiniLM-L6-v2"
+CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 class RulebookRetriever:
-    def __init__(self, es_host: str = "http://localhost:9200", model_name: str = MODEL_NAME):
+    def __init__(self, es_host: str = "http://localhost:9200", model_name: str = MODEL_NAME, use_reranker: bool = True):
         # Use HTTP, no SSL, no auth, force API version 8 headers
         from elasticsearch import Elasticsearch
         self.es = Elasticsearch(es_host, headers={
@@ -15,6 +16,9 @@ class RulebookRetriever:
             "Content-Type": "application/vnd.elasticsearch+json; compatible-with=8"
         })
         self.model = SentenceTransformer(model_name)
+        self.use_reranker = use_reranker
+        if use_reranker:
+            self.cross_encoder = CrossEncoder(CROSS_ENCODER_MODEL)
 
     def embed_query(self, query: str) -> np.ndarray:
         return self.model.encode([query], convert_to_numpy=True)[0]
@@ -117,9 +121,36 @@ class RulebookRetriever:
                 })
             # Sort by combined score
             combined.sort(key=lambda x: x["score"], reverse=True)
-            return combined[:top_k]
+            chunks = combined[:top_k]
         else:
             raise ValueError(f"Unknown search_type: {search_type}")
+        
+        # Apply cross-encoder re-ranking if enabled
+        if self.use_reranker and search_type != "keyword":
+            chunks = self._rerank_with_cross_encoder(query, chunks)
+        
+        return chunks
+    
+    def _rerank_with_cross_encoder(self, query: str, chunks: List[Dict]) -> List[Dict]:
+        """Re-rank chunks using cross-encoder for better relevance."""
+        if not chunks:
+            return chunks
+        
+        # Create query-chunk pairs
+        pairs = [[query, chunk['text']] for chunk in chunks]
+        
+        # Get cross-encoder scores
+        scores = self.cross_encoder.predict(pairs)
+        
+        # Add cross-encoder scores and re-sort
+        for chunk, score in zip(chunks, scores):
+            chunk['cross_encoder_score'] = float(score)
+            chunk['original_score'] = chunk['score']
+            chunk['score'] = float(score)  # Replace with cross-encoder score
+        
+        # Sort by cross-encoder score
+        chunks.sort(key=lambda x: x['score'], reverse=True)
+        return chunks
 
 if __name__ == "__main__":
     import sys

@@ -1,14 +1,23 @@
 import csv
 import sys
-import subprocess
 import time
 import os
 from datetime import datetime
 import shutil
+import argparse
+import re
+import pandas as pd
+from tqdm import tqdm
+from sentence_transformers import SentenceTransformer, util
+from elasticsearch import Elasticsearch
+
+# Add project root to Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.search.retriever import RulebookRetriever, ES_INDEX
 
 CSV_PATH = "data/processed/qa_results.csv"
 ARCHIVE_DIR = "data/processed/archive"
-RETRIEVER_PATH = "src/search/retriever.py"
 CSV_CLEAN_PATH = "data/processed/qa_results_clean.csv"
 
 # Ensure archive directory exists
@@ -18,172 +27,190 @@ os.makedirs(ARCHIVE_DIR, exist_ok=True)
 if os.path.exists(CSV_CLEAN_PATH):
     shutil.copy(CSV_CLEAN_PATH, CSV_PATH)
 
-import argparse
+def get_best_answer_from_chunks(question: str, chunks: list, model: SentenceTransformer):
+    """
+    Finds the best sentence from chunks based on a hybrid scoring model
+    that considers semantic similarity and section relevance.
+    Extracts a multi-sentence answer for better context.
+    """
+    if not chunks:
+        return "No relevant information found.", 0, {}
 
-parser = argparse.ArgumentParser(description="Run QA batch script with optional question limit.")
-parser.add_argument("--max_questions", type=int, default=None, help="Maximum number of questions to answer from the file.")
-args = parser.parse_args()
+    question_embedding = model.encode(question, convert_to_tensor=True)
+    question_keywords = set(question.lower().split())
 
-# Read all questions from the CSV
-rows = []
-with open(CSV_PATH, newline='', encoding='utf-8') as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        rows.append(row)
-
-# Optionally limit the number of questions
-if args.max_questions is not None:
-    rows = rows[:args.max_questions]
-
-total = len(rows)
-start_time = time.time()
-
-
-# Load section headers for filtering
-section_headers_path = "data/processed/section_headers.txt"
-if os.path.exists(section_headers_path):
-    with open(section_headers_path, "r", encoding="utf-8") as shf:
-        section_headers = set(line.strip() for line in shf if line.strip())
-else:
+    # Load section headers to filter them out from answers
     section_headers = set()
+    try:
+        with open("data/processed/section_headers.txt", "r", encoding="utf-8") as f:
+            section_headers = {line.strip() for line in f}
+    except FileNotFoundError:
+        print("[Warning] section_headers.txt not found. Section headers may appear in answers.")
 
-# For each question, run the retriever and capture the top answer
-for idx, row in enumerate(rows, 1):
-    import re
-    question = row['question']
-    # Use the same Python executable that's running this script
-    python_exe = sys.executable
-    # Run subprocess with UTF-8 encoding
-    result = subprocess.run([
-        python_exe, RETRIEVER_PATH, question
-    ], capture_output=True, encoding='utf-8', errors='replace', cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    # Collect all answer chunks from output
-    answer_chunks = []
-    lines = result.stdout.splitlines()
-    for i, line in enumerate(lines):
-        if line.startswith("Text: "):
-            # Extract full text (may be truncated at 300 chars in output)
-            text = line[6:].strip()
-            if text:
-                answer_chunks.append(text)
-    # For each chunk, split into sentences and score each sentence
-    from sentence_transformers import SentenceTransformer
-    import numpy as np
-    model = SentenceTransformer('all-MiniLM-L6-v2')
-    def hybrid_score(q, s):
-        # Hybrid: 0.7 vector + 0.3 keyword (BM25-like, here: simple token overlap)
-        q_emb = model.encode([q], convert_to_numpy=True)[0]
-        s_emb = model.encode([s], convert_to_numpy=True)[0]
-        v_score = np.dot(q_emb, s_emb) / (np.linalg.norm(q_emb) * np.linalg.norm(s_emb) + 1e-8)
-        # Simple keyword overlap as BM25 proxy
-        q_tokens = set(re.findall(r'\w+', q.lower()))
-        s_tokens = set(re.findall(r'\w+', s.lower()))
-        k_score = len(q_tokens & s_tokens) / (len(q_tokens | s_tokens) + 1e-8)
-        score = 0.7 * v_score + 0.3 * k_score
-        # Penalty for short sentences (<= 15 chars)
-        if len(s.strip()) <= 15:
-            score -= 0.25
-        # Penalty for all uppercase (ignoring punctuation)
-        s_alpha = re.sub(r'[^A-Za-z]', '', s)
-        if s_alpha.isupper() and len(s_alpha) > 0:
-            score -= 0.25
-        # Penalty for matching section headers
-        if s.strip() in section_headers:
-            score -= 0.5
-        return score
-    
-    # Collect all candidate sentences with their scores
-    candidates = []
-    for chunk in answer_chunks:
-        # Split chunk into sentences (lenient regex)
-        sentences = re.split(r'(?<=[.!?])\s+', chunk)
-        for sent in sentences:
-            sent = sent.strip()
-            # Skip very short sentences
-            if len(sent) < 10:
+    all_candidates = []
+
+    for chunk in chunks:
+        text = chunk['text']
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        
+        if not sentences:
+            continue
+
+        sentence_embeddings = model.encode(sentences, convert_to_tensor=True)
+        cosine_scores = util.pytorch_cos_sim(question_embedding, sentence_embeddings)[0]
+
+        # Calculate section relevance boost
+        section_boost = 0
+        if chunk.get('section'):
+            section_keywords = set(chunk['section'].lower().split())
+            common_keywords = question_keywords.intersection(section_keywords)
+            if common_keywords:
+                section_boost = 0.1 * len(common_keywords) # Boost for each matching keyword
+
+        for i, sentence in enumerate(sentences):
+            # Skip sentences that are just section headers or too short
+            if sentence.strip() in section_headers or len(sentence.split()) < 4:
                 continue
-            score = hybrid_score(question, sent)
-            candidates.append((score, sent, chunk))
-        # Also consider the whole chunk as a candidate
-        if len(chunk.strip()) >= 10:
-            score = hybrid_score(question, chunk)
-            candidates.append((score, chunk, chunk))
-    
-    # Select best answer by extracting multiple relevant sentences
-    if candidates:
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        
-        # Get the best scored sentence and its source chunk
-        best_score, best_sent, source_chunk = candidates[0]
-        
-        # Extract context: find the best sentence in its chunk and include surrounding sentences
-        answer_sentences = []
-        chunk_sentences = re.split(r'(?<=[.!?])\s+', source_chunk)
-        
-        # Find where the best sentence appears in the chunk
-        best_sent_idx = -1
-        for i, sent in enumerate(chunk_sentences):
-            if best_sent.strip() in sent.strip() or sent.strip() in best_sent.strip():
-                best_sent_idx = i
-                break
-        
-        if best_sent_idx >= 0:
-            # Include the best sentence plus surrounding context (1 before, 2 after)
-            start_idx = max(0, best_sent_idx - 1)
-            end_idx = min(len(chunk_sentences), best_sent_idx + 3)
+
+            # Hybrid score: combine semantic score with other heuristics
+            semantic_score = cosine_scores[i].item()
             
-            for i in range(start_idx, end_idx):
-                sent = chunk_sentences[i].strip()
-                if len(sent) >= 10:
-                    # Skip if it's a section header
-                    if sent not in section_headers:
-                        answer_sentences.append(sent)
+            # Penalize short sentences and all-caps sentences (likely headers)
+            penalty = 0
+            if len(sentence.split()) < 5:
+                penalty += 0.1
+            if sentence.isupper() and len(sentence.split()) < 10:
+                penalty += 0.2
+
+            final_score = semantic_score + section_boost - penalty
+            
+            all_candidates.append({
+                "score": final_score,
+                "sentence": sentence,
+                "index": i,
+                "sentences": sentences,
+                "chunk": chunk
+            })
+
+    # Sort all candidates by score
+    sorted_candidates = sorted(all_candidates, key=lambda x: x['score'], reverse=True)
+
+    if not sorted_candidates:
+        return "No relevant information found.", 0, {}
+
+    # Get the best candidate
+    best_candidate = sorted_candidates[0]
+    highest_score = best_candidate['score']
+    best_chunk_info = best_candidate['chunk']
+    
+    # Smart extraction: balance completeness with relevance
+    best_index = best_candidate['index']
+    sentences = best_candidate['sentences']
+    
+    # Create a relevance score map for sentences around the best one
+    relevance_threshold = highest_score * 0.4  # Lower threshold to include more context
+    
+    # Find all candidates from the same chunk and sentence list
+    chunk_candidates = [c for c in sorted_candidates 
+                       if c['sentences'] is sentences 
+                       and c['score'] >= relevance_threshold]
+    
+    # Get indices of relevant sentences
+    relevant_indices = {c['index'] for c in chunk_candidates}
+    
+    # Build answer by including consecutive relevant sentences around the best one
+    # Start from best sentence and expand outward
+    answer_indices = {best_index}
+    
+    # Expand backward - include at least 1 sentence before if available
+    for i in range(best_index - 1, max(0, best_index - 3), -1):
+        if i in relevant_indices or len(answer_indices) < 2:
+            answer_indices.add(i)
         else:
-            # Fallback: use the best sentence
-            answer_sentences = [best_sent]
-        
-        # Combine sentences into coherent answer (max 3-4 sentences)
-        best_sent = ' '.join(answer_sentences[:4])
-        
-        # If answer is too long, try to trim to most relevant sentences
-        if len(best_sent) > 800:
-            # Re-score each sentence and keep only top 3
-            scored_sents = [(hybrid_score(question, s), s) for s in answer_sentences[:4]]
-            scored_sents.sort(key=lambda x: x[0], reverse=True)
-            best_sent = ' '.join([s for _, s in scored_sents[:3]])
-            
-    elif answer_chunks:
-        # If no valid sentences, use the first non-empty chunk
-        best_sent = next((chunk for chunk in answer_chunks if chunk.strip()), answer_chunks[0] if answer_chunks else "[No answer found]")
-    else:
-        best_sent = "[No answer found]"
+            break  # Stop at first irrelevant sentence (unless we need more context)
     
-    row['predicted'] = best_sent
-    # Progress tracker
-    print(f"[{idx}/{total}] Processed: {question[:50]}{'...' if len(question) > 50 else ''}")
+    # Expand forward - include at least 2 sentences after if available
+    for i in range(best_index + 1, min(len(sentences), best_index + 5)):
+        if i in relevant_indices or len(answer_indices) < 3:
+            answer_indices.add(i)
+        else:
+            break  # Stop at first irrelevant sentence (unless we need more context)
+    
+    # Sort indices and extract sentences
+    sorted_indices = sorted(answer_indices)
+    context_sentences = [sentences[i] for i in sorted_indices if len(sentences[i].split()) > 3]
+    
+    # Post-process to form a coherent paragraph
+    best_answer = " ".join(s.strip() for s in context_sentences)
+    
+    # Clean up potential artifacts
+    best_answer = re.sub(r'\s+', ' ', best_answer).strip()
 
-end_time = time.time()
-elapsed = end_time - start_time
+    return best_answer, highest_score, best_chunk_info
 
-# Write back to CSV
-with open(CSV_PATH, 'w', newline='', encoding='utf-8') as f:
-    writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-    writer.writeheader()
-    writer.writerows(rows)
+def main(args):
+    # Track start time
+    start_time = time.time()
+    
+    # Initialize Retriever
+    retriever = RulebookRetriever()
+    answer_selection_model = retriever.model
+    
+    # Get hybrid weight from args or use default
+    hybrid_weight = getattr(args, 'hybrid_weight', 0.7)
 
-# Always save archive with timestamp and elapsed time in filename, even if no new predictions are made
-now_str = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-elapsed_str = f"{int(elapsed)}s"
-archive_path = os.path.join(
-    ARCHIVE_DIR,
-    f"qa_results_{now_str}_{elapsed_str}.csv"
-)
-with open(archive_path, 'w', newline='', encoding='utf-8') as f:
-    writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-    writer.writeheader()
-    writer.writerows(rows)
-print(f"\nArchive saved to {archive_path}")
+    df = pd.read_csv(CSV_PATH)
+    if args.max_questions:
+        df = df.head(args.max_questions)
 
-print(f"\nUpdated predictions written to {CSV_PATH}")
-print(f"Archive saved to {archive_path}")
-print(f"Total time: {elapsed:.2f} seconds for {total} questions.")
+    results = []
+    for i, row in tqdm(df.iterrows(), total=len(df), desc="Processing questions"):
+        question = row['question']
+        ground_truth = row['ground_truth']
+        
+        # Search for relevant chunks with specified hybrid weight
+        answer_chunks = retriever.search(question, top_k=5, search_type="hybrid", hybrid_weight=hybrid_weight)
+        
+        if not answer_chunks:
+            results.append((question, ground_truth, "No chunks found", 0, None, None, None, None))
+            continue
+
+        # Find which rank contains the best matching chunk (for diagnostics)
+        best_chunk_rank = None
+        try:
+            from rapidfuzz import fuzz
+            for rank, chunk in enumerate(answer_chunks, 1):
+                sim = fuzz.token_set_ratio(str(chunk['text']), str(ground_truth))
+                if sim >= 70:  # If chunk has >70% similarity to ground truth
+                    best_chunk_rank = rank
+                    break
+        except:
+            pass
+
+        # Get the best answer from the chunks
+        predicted_answer, score, chunk_info = get_best_answer_from_chunks(question, answer_chunks, answer_selection_model)
+
+        results.append((question, ground_truth, predicted_answer, score, chunk_info.get('page'), chunk_info.get('section'), chunk_info.get('chunk_index'), best_chunk_rank))
+
+    # Create a new DataFrame for the results
+    results_df = pd.DataFrame(results, columns=['question', 'ground_truth', 'predicted', 'score', 'page', 'section', 'chunk_index', 'best_chunk_rank'])
+
+    # Calculate processing time
+    elapsed_time = int(time.time() - start_time)
+    
+    # Save results with new format: qa_results_YYYY-MM-DD_HH-MM-SS_XXs_wWW.csv
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    weight_suffix = f"_w{int(hybrid_weight*100)}" if hybrid_weight != 0.7 else ""
+    output_filename = f"data/processed/archive/qa_results_{timestamp}_{elapsed_time}s{weight_suffix}.csv"
+    # Overwrite qa_results.csv
+    results_df.to_csv("data/processed/qa_results.csv", index=False)
+    # Save archive copy
+    results_df.to_csv(output_filename, index=False)
+    print(f"\nQA results saved to {output_filename} and overwritten qa_results.csv")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run QA batch script.")
+    parser.add_argument("--max_questions", type=int, default=None, help="Maximum number of questions to process.")
+    parser.add_argument("--hybrid_weight", type=float, default=0.7, help="Weight for vector vs keyword search (0.0=keyword only, 1.0=vector only). Default: 0.7 (optimal: 70%% vector, 30%% keyword)")
+    args = parser.parse_args()
+    main(args)
