@@ -42,12 +42,12 @@ def main(args):
     # Track start time
     start_time = time.time()
 
-    # Initialize Retriever (disable cross-encoder for consistency)
-    retriever = RulebookRetriever(use_reranker=False)
+    # Initialize Retriever - using fast 800-char extractive method by default
+    # LLM disabled due to compatibility issues with caching
+    retriever = RulebookRetriever(use_reranker=True, use_llm=False)
     
     # Get hybrid weight from args or use default
-    hybrid_weight = float(args.hybrid_weight) if hasattr(args, 'hybrid_weight') else 0.8  # bias toward vector
-    retriever = RulebookRetriever(use_reranker=True)  # enable cross-encoder reranking
+    hybrid_weight = float(args.hybrid_weight) if hasattr(args, 'hybrid_weight') else 0.85
 
     df = pd.read_csv(CSV_PATH)
     if args.max_questions:

@@ -9,12 +9,40 @@ ES_INDEX = "rulebook_chunks"
 MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"  # 768 dims for quality
 
 class RulebookRetriever:
-    def __init__(self, es_host: str = "http://localhost:9200", model_name: str = MODEL_NAME, use_reranker: bool = True):
+    def __init__(self, es_host: str = "http://localhost:9200", model_name: str = MODEL_NAME, use_reranker: bool = True, use_llm: bool = False):
         self.es = Elasticsearch(es_host)
         print(f"[Retriever] Loading embedding model: {model_name}")
         self.model = SentenceTransformer(model_name)
         self.use_reranker = use_reranker
         self.cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2") if use_reranker else None
+        
+        # Optional LLM for concise answer generation
+        self.use_llm = use_llm
+        self.llm_model = None
+        self.llm_tokenizer = None
+        
+        if use_llm:
+            print("[Retriever] Loading Phi-3-mini model for answer generation...")
+            try:
+                from transformers import AutoTokenizer, AutoModelForCausalLM
+                import torch
+                
+                # Use Phi-3-mini (3.8B) - no authentication required, fast and good quality
+                model_id = "microsoft/Phi-3-mini-4k-instruct"
+                self.llm_tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+                self.llm_model = AutoModelForCausalLM.from_pretrained(
+                    model_id,
+                    device_map="auto" if torch.cuda.is_available() else "cpu",
+                    trust_remote_code=True
+                )
+                # Move to GPU and use FP16 if available
+                if torch.cuda.is_available():
+                    self.llm_model = self.llm_model.half()  # Use FP16 for speed
+                print("[Retriever] LLM loaded successfully")
+            except Exception as e:
+                print(f"[Retriever] Warning: Could not load LLM: {e}")
+                print("[Retriever] Falling back to extractive answers")
+                self.use_llm = False
 
     def embed_query(self, query: str) -> np.ndarray:
         # Normalize to unit vectors for cosine similarity stability
@@ -142,19 +170,106 @@ class RulebookRetriever:
         return combined
 
     def generate_answer(self, question: str, chunks: List[Dict], multi_chunk_synthesis: bool = False) -> str:
-        """Return the text from the top-ranked chunk(s) - simpler and more accurate."""
+        """Generate concise answer using LLM or extractive method."""
         if not chunks:
             return "No relevant information found."
-
-        # Combine text from top 15 chunks for maximum coverage
-        texts = []
-        for chunk in chunks[:15]:
+        
+        if self.use_llm and self.llm_model:
+            return self._generate_answer_llm(question, chunks)
+        else:
+            return self._generate_answer_extractive(question, chunks)
+    
+    def _generate_answer_llm(self, question: str, chunks: List[Dict]) -> str:
+        """Generate concise 2-3 sentence answer using Phi-3-mini."""
+        import torch
+        
+        # Collect context from top 5 chunks (limit to ~2000 chars for speed)
+        context_parts = []
+        total_chars = 0
+        for chunk in chunks[:5]:
             text = chunk.get("text", "")
-            if text and text not in texts:  # Avoid duplicates
-                texts.append(text)
+            if text and total_chars + len(text) < 2000:
+                context_parts.append(text)
+                total_chars += len(text)
         
-        answer = " ".join(texts) if texts else "No relevant information found."
+        context = "\n\n".join(context_parts)
         
-        # Clean whitespace
+        # Phi-3 format
+        prompt = f"""<|system|>
+You are a helpful assistant that answers questions about board game rules. Provide concise, accurate answers in 2-3 sentences based only on the given rulebook context.<|end|>
+<|user|>
+Rulebook Context:
+{context}
+
+Question: {question}
+
+Provide a clear, concise answer in 2-3 sentences using only information from the context above.<|end|>
+<|assistant|>"""
+        
+        try:
+            inputs = self.llm_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
+            inputs = {k: v.to(self.llm_model.device) for k, v in inputs.items()}
+            
+            # Generate without caching to avoid compatibility issues
+            with torch.no_grad():
+                outputs = self.llm_model.generate(
+                    **inputs,
+                    max_new_tokens=150,  # ~2-3 sentences
+                    do_sample=False,  # Deterministic for consistency
+                    pad_token_id=self.llm_tokenizer.eos_token_id,
+                    use_cache=False  # Disable caching to avoid 'seen_tokens' errors
+                )
+            
+            # Decode and extract answer
+            full_output = self.llm_tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            # Extract just the assistant's response (after the last <|assistant|> tag)
+            if "<|assistant|>" in full_output:
+                answer = full_output.split("<|assistant|>")[-1].strip()
+            else:
+                # Fallback: take everything after the prompt
+                answer = full_output[len(prompt):].strip()
+            
+            # Clean up any remaining tags
+            answer = answer.replace("<|end|>", "").strip()
+            answer = re.sub(r'\s+', ' ', answer).strip()
+            
+            return answer if answer else self._generate_answer_extractive(question, chunks)
+            
+        except Exception as e:
+            print(f"[Retriever] LLM generation failed: {e}, falling back to extractive")
+            return self._generate_answer_extractive(question, chunks)
+    
+    def _generate_answer_extractive(self, question: str, chunks: List[Dict]) -> str:
+        """Extract text from top chunks with 800-char limit for fast, concise answers."""
+        # Build answer from chunks up to ~800 characters
+        answer_parts = []
+        current_length = 0
+        max_length = 800
+        
+        for chunk in chunks[:15]:  # Use top 15 chunks for good coverage
+            text = chunk.get("text", "")
+            if not text:
+                continue
+            
+            if current_length + len(text) > max_length:
+                # Add partial chunk text up to the limit
+                remaining = max_length - current_length
+                if remaining > 50:  # Only add if meaningful amount remains
+                    sentences = re.split(r'(?<=[.!?])\s+', text)
+                    for sent in sentences:
+                        if current_length + len(sent) <= max_length:
+                            answer_parts.append(sent)
+                            current_length += len(sent) + 1
+                        else:
+                            break
+                break
+            else:
+                answer_parts.append(text)
+                current_length += len(text) + 1
+        
+        answer = " ".join(answer_parts) if answer_parts else "No relevant information found."
+        answer = re.sub(r"\s+", " ", answer).strip()
+        return answer
         answer = re.sub(r"\s+", " ", answer).strip()
         return answer
