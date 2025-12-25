@@ -8,6 +8,13 @@ import argparse
 import pandas as pd
 from tqdm import tqdm
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+SRC_PATH = os.path.join(PROJECT_ROOT, 'src')
+if SRC_PATH not in sys.path:
+    sys.path.insert(0, SRC_PATH)
+
+from search.retriever import RulebookRetriever
+
 # Add project root to Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -34,12 +41,13 @@ if os.path.exists(CSV_CLEAN_PATH):
 def main(args):
     # Track start time
     start_time = time.time()
-    
+
     # Initialize Retriever (disable cross-encoder for consistency)
     retriever = RulebookRetriever(use_reranker=False)
     
     # Get hybrid weight from args or use default
-    hybrid_weight = getattr(args, 'hybrid_weight', 0.7)
+    hybrid_weight = float(args.hybrid_weight) if hasattr(args, 'hybrid_weight') else 0.8  # bias toward vector
+    retriever = RulebookRetriever(use_reranker=True)  # enable cross-encoder reranking
 
     df = pd.read_csv(CSV_PATH)
     if args.max_questions:
@@ -51,8 +59,8 @@ def main(args):
         ground_truth = row['ground_truth']
         
         # Search for relevant chunks with specified hybrid weight
-        # Retrieve 10 chunks for better coverage
-        answer_chunks = retriever.search(question, top_k=10, search_type="hybrid", hybrid_weight=hybrid_weight)
+        # Retrieve 20 chunks for maximum coverage, favor semantic search
+        answer_chunks = retriever.search(question, top_k=20, search_type="hybrid", hybrid_weight=0.8)
         
         if not answer_chunks:
             results.append((question, ground_truth, "No chunks found", 0, None, None, None, None))
