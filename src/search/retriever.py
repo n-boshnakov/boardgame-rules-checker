@@ -34,7 +34,7 @@ class RulebookRetriever:
             script_query["script_score"]["query"]["bool"]["filter"] = [{"term": {"section": section}}]
         return self.es.search(index=ES_INDEX, body={"size": size, "query": script_query})
 
-    def search(self, query: str, section: Optional[str] = None, top_k: int = 5, search_type: str = "hybrid", hybrid_weight: float = 0.8) -> List[Dict]:
+    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85) -> List[Dict]:
         query_vec = self.embed_query(query)
 
         def parse_hits(res):
@@ -146,9 +146,9 @@ class RulebookRetriever:
         if not chunks:
             return "No relevant information found."
 
-        # Combine text from top 5 chunks for maximum coverage
+        # Combine text from top 15 chunks for maximum coverage
         texts = []
-        for chunk in chunks[:5]:
+        for chunk in chunks[:15]:
             text = chunk.get("text", "")
             if text and text not in texts:  # Avoid duplicates
                 texts.append(text)

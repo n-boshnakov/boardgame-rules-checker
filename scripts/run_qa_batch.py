@@ -59,8 +59,8 @@ def main(args):
         ground_truth = row['ground_truth']
         
         # Search for relevant chunks with specified hybrid weight
-        # Retrieve 20 chunks for maximum coverage, favor semantic search
-        answer_chunks = retriever.search(question, top_k=20, search_type="hybrid", hybrid_weight=0.8)
+        # Retrieve 25 chunks for maximum coverage, strongly favor semantic search (0.85)
+        answer_chunks = retriever.search(question, top_k=25, search_type="hybrid", hybrid_weight=0.85)
         
         if not answer_chunks:
             results.append((question, ground_truth, "No chunks found", 0, None, None, None, None))
