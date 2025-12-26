@@ -174,14 +174,15 @@ def extract_section_from_content(text: str, prev_section: Optional[str] = None) 
     return prev_section
 
 
-def chunk_text_with_overlap(text: str, max_chars: int = 2000, overlap_chars: int = 200) -> List[str]:
+def chunk_text_with_overlap(text: str, max_chars: int = 1000, overlap_chars: int = 150) -> List[str]:
     """
     Splits text into overlapping chunks that respect sentence boundaries.
+    Aggressive chunking: 500-1000 chars per chunk with 150 char overlap for good balance.
     
     Args:
         text: Text to chunk
-        max_chars: Maximum characters per chunk (default 2000, safe for sentence-transformers)
-        overlap_chars: Number of characters to overlap between chunks (default 200)
+        max_chars: Maximum characters per chunk (default 1000 for optimal context)
+        overlap_chars: Number of characters to overlap between chunks (default 150)
     
     Returns:
         List of text chunks
@@ -189,7 +190,7 @@ def chunk_text_with_overlap(text: str, max_chars: int = 2000, overlap_chars: int
     if len(text) <= max_chars:
         return [text]
     
-    # Split into sentences (simple approach)
+    # Split into sentences (handle multiple sentence endings)
     sentences = re.split(r'(?<=[.!?])\s+', text)
     
     chunks = []
@@ -206,9 +207,11 @@ def chunk_text_with_overlap(text: str, max_chars: int = 2000, overlap_chars: int
                 current_chunk = []
                 current_length = 0
             
-            # Split long sentence into smaller parts
+            # Split long sentence into smaller parts with overlap
             for i in range(0, len(sentence), max_chars - overlap_chars):
-                chunks.append(sentence[i:i + max_chars])
+                chunk_part = sentence[i:i + max_chars]
+                if chunk_part.strip():
+                    chunks.append(chunk_part)
             continue
         
         # If adding this sentence would exceed limit, save current chunk
@@ -216,25 +219,20 @@ def chunk_text_with_overlap(text: str, max_chars: int = 2000, overlap_chars: int
             chunks.append(' '.join(current_chunk))
             
             # Start new chunk with overlap from previous chunk
-            overlap_text = ' '.join(current_chunk)
-            if len(overlap_text) > overlap_chars:
-                # Keep last part of previous chunk for context
-                overlap_sentences = []
-                overlap_length = 0
-                for prev_sent in reversed(current_chunk):
-                    if overlap_length + len(prev_sent) <= overlap_chars:
-                        overlap_sentences.insert(0, prev_sent)
-                        overlap_length += len(prev_sent)
-                    else:
-                        break
-                current_chunk = overlap_sentences
-                current_length = overlap_length
-            else:
-                current_chunk = []
-                current_length = 0
+            overlap_sentences = []
+            overlap_length = 0
+            for prev_sent in reversed(current_chunk):
+                if overlap_length + len(prev_sent) <= overlap_chars:
+                    overlap_sentences.insert(0, prev_sent)
+                    overlap_length += len(prev_sent) + 1  # +1 for space
+                else:
+                    break
+            
+            current_chunk = overlap_sentences
+            current_length = sum(len(s) + 1 for s in overlap_sentences) if overlap_sentences else 0
         
         current_chunk.append(sentence)
-        current_length += sentence_len
+        current_length += sentence_len + 1  # +1 for space
     
     # Add the last chunk
     if current_chunk:
@@ -367,12 +365,13 @@ def has_substantial_content_after(paragraphs: List[Dict], current_idx: int, min_
 
 def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
     """
-    New section-based chunking logic:
+    Aggressive paragraph-level chunking:
     1. Find ALL CAPS section headings and use as current section
-    2. Find Title Case subsection headings and start new chunks
-    3. Skip Example paragraphs
-    4. Group related content under the same subsection
-    5. Validate headings have substantial content after them (not just image captions)
+    2. Find Title Case subsection headings 
+    3. Split content into 500-1000 char chunks with 150 char overlap
+    4. Skip card scans (ALL CAPS with minimal content)
+    5. Preserve table formatting
+    Target: 80-120 chunks from 26 current chunks
     """
     chunks = []
     current_section = None
@@ -391,6 +390,37 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
     
     in_credits_section = False
     in_components_section = False
+    
+    def save_current_chunk():
+        """Helper to save and split current chunk if needed."""
+        nonlocal current_chunk_text, current_page, current_section, current_subsection
+        
+        if not current_chunk_text:
+            return
+        
+        chunk_text = '\n\n'.join(current_chunk_text)
+        
+        # Aggressive splitting: if chunk exceeds 1000 chars, split it
+        if len(chunk_text) > 1000:
+            sub_chunks = chunk_text_with_overlap(chunk_text, max_chars=1000, overlap_chars=150)
+            for sub_chunk in sub_chunks:
+                if sub_chunk.strip():
+                    chunks.append({
+                        'text': sub_chunk.strip(),
+                        'page': current_page,
+                        'section': current_section,
+                        'subsection': current_subsection
+                    })
+        else:
+            # Keep smaller chunks as-is
+            chunks.append({
+                'text': chunk_text,
+                'page': current_page,
+                'section': current_section,
+                'subsection': current_subsection
+            })
+        
+        current_chunk_text = []
     
     for idx, para_info in enumerate(paragraphs):
         text = para_info['text'].strip()
@@ -427,25 +457,13 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
         
         # Check if this is an ALL CAPS section heading (with content validation)
         if is_all_caps_section(text):
-            # Validate that this is a real section heading, not an image caption
+            # Validate that this is a real section heading, not a card scan
             if not has_substantial_content_after(paragraphs, idx):
-                print(f"[Parser] Skipping potential image caption (no content after): {text[:50]}")
-                # Treat as regular content instead
-                if current_page is None:
-                    current_page = page
-                current_chunk_text.append(text)
+                print(f"[Parser] Skipping card scan/image caption: {text[:50]}")
                 continue
             
-            # Save previous chunk if exists
-            if current_chunk_text:
-                chunk_text = '\n\n'.join(current_chunk_text)
-                chunks.append({
-                    'text': chunk_text,
-                    'page': current_page,
-                    'section': current_section,
-                    'subsection': current_subsection
-                })
-                current_chunk_text = []
+            # Save previous chunk
+            save_current_chunk()
             
             # Update section
             current_section = text
@@ -454,28 +472,21 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
             print(f"[Parser] Found section heading: {text.encode('ascii', errors='replace').decode('ascii')}")
             continue
         
-        # Check if this is a Title Case subsection heading (with content validation)
+        # Check if this is a Title Case subsection heading
         if is_title_case_heading(text):
-            # Validate that this is a real subsection heading, not an image caption
+            # Validate that this is a real subsection heading
             if not has_substantial_content_after(paragraphs, idx):
-                print(f"[Parser] Skipping potential image caption (no content after): {text[:50]}")
-                # Treat as regular content instead
+                print(f"[Parser] Skipping potential image caption: {text[:50]}")
+                # Treat as regular content
                 if current_page is None:
                     current_page = page
                 current_chunk_text.append(text)
                 continue
             
-            # Save previous chunk if exists (this is the main section content or previous subsection)
-            if current_chunk_text:
-                chunk_text = '\n\n'.join(current_chunk_text)
-                chunks.append({
-                    'text': chunk_text,
-                    'page': current_page,
-                    'section': current_section,
-                    'subsection': current_subsection
-                })
+            # Save previous chunk
+            save_current_chunk()
             
-            # Start new chunk for this subsection (include the subsection heading in the chunk text)
+            # Start new chunk with subsection heading
             current_subsection = text
             current_chunk_text = [text]
             current_page = page
@@ -486,23 +497,51 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
         if current_page is None:
             current_page = page
         
-        current_chunk_text.append(text)
+        # For very long paragraphs (tables, etc), consider splitting
+        if len(text) > 800:
+            # Save current chunk first
+            save_current_chunk()
+            
+            # Split long paragraph and create chunks
+            sub_chunks = chunk_text_with_overlap(text, max_chars=1000, overlap_chars=150)
+            for sub_chunk in sub_chunks:
+                if sub_chunk.strip():
+                    chunks.append({
+                        'text': sub_chunk.strip(),
+                        'page': page,
+                        'section': current_section,
+                        'subsection': current_subsection
+                    })
+        else:
+            # Check if adding this paragraph would make chunk too large
+            current_text_length = sum(len(t) for t in current_chunk_text)
+            if current_text_length + len(text) > 1000 and current_chunk_text:
+                # Save current chunk and start new one
+                save_current_chunk()
+                current_page = page
+            
+            current_chunk_text.append(text)
     
-    # Add final chunk
-    if current_chunk_text:
-        chunk_text = '\n\n'.join(current_chunk_text)
-        chunks.append({
-            'text': chunk_text,
-            'page': current_page,
-            'section': current_section,
-            'subsection': current_subsection
-        })
+    # Save final chunk
+    save_current_chunk()
     
-    print(f"[Parser] Created {len(chunks)} section-based chunks from {len(paragraphs)} paragraphs")
+    print(f"[Parser] Created {len(chunks)} aggressive paragraph-level chunks from {len(paragraphs)} paragraphs")
+    print(f"[Parser] Target: 80-120 chunks, Achieved: {len(chunks)} chunks")
+    
+    # Calculate and report statistics
+    chunk_sizes = [len(c['text']) for c in chunks]
+    if chunk_sizes:
+        avg_size = sum(chunk_sizes) / len(chunk_sizes)
+        max_size = max(chunk_sizes)
+        min_size = min(chunk_sizes)
+        print(f"[Parser] Chunk size stats - Avg: {avg_size:.0f} chars, Min: {min_size}, Max: {max_size}")
+        over_1000 = sum(1 for s in chunk_sizes if s > 1000)
+        print(f"[Parser] Chunks over 1000 chars: {over_1000}/{len(chunks)} ({over_1000/len(chunks)*100:.1f}%)")
+    
     return chunks
 
 
-def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_chars: int = 5000, overlap_chars: int = 500) -> List[Dict]:
+def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_chars: int = 1000, overlap_chars: int = 150) -> List[Dict]:
     """
     Parses a PDF rulebook and returns a list of chunks with metadata.
     Skips irrelevant sections (credits, table of contents, ads, thanks, etc.).
@@ -512,8 +551,8 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
     Args:
         pdf_path: Path to the PDF file
         doc_type: Type of document (default "rulebook")
-        max_chunk_chars: Maximum characters per chunk (default 5000 for better coherence)
-        overlap_chars: Characters to overlap between chunks (default 500 for better context)
+        max_chunk_chars: Maximum characters per chunk (default 1000 for optimal context)
+        overlap_chars: Characters to overlap between chunks (default 150 for better context)
     
     Returns:
         List of chunk dictionaries with text, metadata, and context
@@ -740,19 +779,37 @@ if __name__ == "__main__":
     import requests
     all_text = " ".join(chunk["text"] for chunk in chunks)
     # Find capitalized words (not just sentence-initial) and all-uppercase words (acronyms/terms)
+    # Split by sentence endings with better handling of sentence boundaries
     sentence_end_re = re.compile(r'(?<=[.!?])\s+')
     sentences = sentence_end_re.split(all_text)
     capitalized_words = set()
     fully_upper_words = set()
     for sent in sentences:
+        # Strip leading/trailing whitespace and skip empty sentences
+        sent = sent.strip()
+        if not sent:
+            continue
+        
         words_in_sent = re.findall(r"\b\w+\b", sent)
         for i, word in enumerate(words_in_sent):
+            # IMPORTANT: Skip first word of each sentence (sentence-initial capitalization)
             if i == 0:
-                continue  # skip first word of sentence
-            if re.match(r"^[A-Z][a-zA-Z0-9\-]{2,}$", word):
-                capitalized_words.add(word)
+                continue
+            
+            # Add all-uppercase words/acronyms FIRST (e.g., "HP", "XP", "ARTIFACT")
+            # This catches 2+ character acronyms before the length check
             if re.match(r"^[A-Z]{2,}$", word):
                 fully_upper_words.add(word)
+                continue  # Skip remaining checks for this word
+            
+            # Only add words with 3+ characters to avoid single initials/abbreviations
+            # (All-uppercase acronyms already handled above)
+            if len(word) < 3:
+                continue
+            
+            # Add capitalized words (e.g., "Stalker", "Anomaly", "Psionic")
+            if re.match(r"^[A-Z][a-zA-Z0-9\-]{2,}$", word):
+                capitalized_words.add(word)
     # Add all fully capitalized words from chunked text (excluding section titles)
     words = capitalized_words.union(fully_upper_words)
     # Download and use stopwords list to filter out common English words

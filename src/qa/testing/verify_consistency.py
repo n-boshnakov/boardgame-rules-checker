@@ -1,12 +1,16 @@
 import pandas as pd
 from rapidfuzz import fuzz
+import os
+
+# This script is in src/qa/testing/, go up 3 levels to project root
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
 # Load previous full run
-df_prev = pd.read_csv('data/processed/archive/qa_results_2025-12-25_17-32-33_35s.csv')
+df_prev = pd.read_csv(os.path.join(PROJECT_ROOT, 'data/processed/archive/qa_results_2025-12-25_17-32-33_35s.csv'))
 df_prev['similarity'] = [fuzz.token_set_ratio(str(gt), str(pred)) for gt, pred in zip(df_prev['ground_truth'], df_prev['predicted'])]
 
 # Load current test run
-df_test = pd.read_csv('data/processed/qa_results.csv')
+df_test = pd.read_csv(os.path.join(PROJECT_ROOT, 'data/processed/qa_results.csv'))
 df_test['similarity'] = [fuzz.token_set_ratio(str(gt), str(pred)) for gt, pred in zip(df_test['ground_truth'], df_test['predicted'])]
 
 print("="*70)

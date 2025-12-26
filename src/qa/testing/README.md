@@ -12,14 +12,6 @@ Analyzes the latest 40-question test results from `qa_results.csv`:
 
 **Usage:** `python scripts/testing/check_final_results.py`
 
-### check_gpu.py
-Checks GPU/CUDA availability for PyTorch:
-- CUDA availability status
-- GPU device name
-- CUDA version
-
-**Usage:** `python scripts/testing/check_gpu.py`
-
 ### check_similarity.py
 Compares computed similarity vs CSV score column:
 - Validates similarity score consistency

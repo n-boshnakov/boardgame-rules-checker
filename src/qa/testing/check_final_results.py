@@ -1,6 +1,10 @@
 import pandas as pd
+import os
 
-df = pd.read_csv('data/processed/qa_results.csv')
+# This script is in src/qa/testing/, go up 3 levels to project root
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+
+df = pd.read_csv(os.path.join(PROJECT_ROOT, 'data/processed/qa_results.csv'))
 
 print('40-question results (800-char extractive):')
 print(f'Mean score: {df["score"].mean():.4f} ({df["score"].mean()*100:.2f}%)')

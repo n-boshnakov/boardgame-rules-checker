@@ -8,21 +8,17 @@ import argparse
 import pandas as pd
 from tqdm import tqdm
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+# This script is in src/qa/, so go up 2 levels to reach project root
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 SRC_PATH = os.path.join(PROJECT_ROOT, 'src')
 if SRC_PATH not in sys.path:
     sys.path.insert(0, SRC_PATH)
 
 from search.retriever import RulebookRetriever
 
-# Add project root to Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from src.search.retriever import RulebookRetriever
-
-CSV_PATH = "data/processed/qa_results.csv"
-ARCHIVE_DIR = "data/processed/archive"
-CSV_CLEAN_PATH = "data/processed/qa_results_clean.csv"
+CSV_PATH = os.path.join(PROJECT_ROOT, "data/processed/qa_results.csv")
+ARCHIVE_DIR = os.path.join(PROJECT_ROOT, "data/processed/archive")
+CSV_CLEAN_PATH = os.path.join(PROJECT_ROOT, "data/processed/qa_results_clean.csv")
 
 # Ensure archive directory exists
 os.makedirs(ARCHIVE_DIR, exist_ok=True)
@@ -42,12 +38,8 @@ def main(args):
     # Track start time
     start_time = time.time()
 
-    # Initialize Retriever - using fast 800-char extractive method by default
-    # LLM disabled due to compatibility issues with caching
-    retriever = RulebookRetriever(use_reranker=True, use_llm=False)
-    
-    # Get hybrid weight from args or use default
-    hybrid_weight = float(args.hybrid_weight) if hasattr(args, 'hybrid_weight') else 0.85
+    # Initialize Retriever with baseline configuration
+    retriever = RulebookRetriever(use_reranker=True)
 
     df = pd.read_csv(CSV_PATH)
     if args.max_questions:
@@ -58,8 +50,7 @@ def main(args):
         question = row['question']
         ground_truth = row['ground_truth']
         
-        # Search for relevant chunks with specified hybrid weight
-        # Retrieve 25 chunks for maximum coverage, strongly favor semantic search (0.85)
+        # Search for relevant chunks with baseline configuration
         answer_chunks = retriever.search(question, top_k=25, search_type="hybrid", hybrid_weight=0.85)
         
         if not answer_chunks:
@@ -80,13 +71,19 @@ def main(args):
 
         # Generate answer using retriever's generate_answer method
         # This is the single source of truth for answer generation
-        predicted_answer = retriever.generate_answer(question, answer_chunks, multi_chunk_synthesis=True)
+        predicted_answer = retriever.generate_answer(question, answer_chunks)
+        
+        # Calculate answer similarity to ground truth
+        try:
+            from rapidfuzz import fuzz
+            similarity_score = fuzz.token_set_ratio(str(predicted_answer), str(ground_truth)) / 100.0
+        except:
+            similarity_score = 0.0
         
         # Get metadata from first chunk for reference
         first_chunk = answer_chunks[0] if answer_chunks else {}
-        score = first_chunk.get('score', 0)
 
-        results.append((question, ground_truth, predicted_answer, score, 
+        results.append((question, ground_truth, predicted_answer, similarity_score, 
                        first_chunk.get('page'), first_chunk.get('section'), 
                        first_chunk.get('chunk_index'), best_chunk_rank))
 
@@ -96,10 +93,10 @@ def main(args):
     # Calculate processing time
     elapsed_time = int(time.time() - start_time)
     
-    # Save results with new format: qa_results_YYYY-MM-DD_HH-MM-SS_XXs_wWW.csv
+    # Save results with format: qa_results_YYYY-MM-DD_HH-MM-SS_XXs.csv
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    weight_suffix = f"_w{int(hybrid_weight*100)}" if hybrid_weight != 0.7 else ""
-    output_filename = f"data/processed/archive/qa_results_{timestamp}_{elapsed_time}s{weight_suffix}.csv"
+    output_filename = f"data/processed/archive/qa_results_{timestamp}_{elapsed_time}s.csv"
+    
     # Overwrite qa_results.csv
     results_df.to_csv("data/processed/qa_results.csv", index=False)
     # Save archive copy
@@ -109,6 +106,11 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run QA batch script.")
     parser.add_argument("--max_questions", type=int, default=None, help="Maximum number of questions to process.")
-    parser.add_argument("--hybrid_weight", type=float, default=0.7, help="Weight for vector vs keyword search (0.0=keyword only, 1.0=vector only). Default: 0.7 (optimal: 70%% vector, 30%% keyword)")
+    parser.add_argument("--rerank_top_n", type=int, default=10, help="Number of top chunks to rerank with CrossEncoder (default: 10)")
+    parser.add_argument("--hybrid_weight", type=float, default=0.85, help="Weight for vector vs keyword in hybrid search (default: 0.85 = 85%% semantic, 15%% BM25)")
+    parser.add_argument("--search_type", type=str, default="hybrid", choices=["vector", "hybrid", "keyword"], help="Search type: vector (semantic only), hybrid (semantic+BM25), keyword (BM25 only)")
+    parser.add_argument("--semantic_selection", action="store_true", help="Use semantic sentence selection for answer generation (scores sentences by relevance)")
+    args = parser.parse_args()
+    main(args)
     args = parser.parse_args()
     main(args)

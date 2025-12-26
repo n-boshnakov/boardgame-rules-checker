@@ -1,7 +1,11 @@
 import pandas as pd
 import glob
+import os
 
-files = sorted(glob.glob('data/processed/archive/qa_results_2025-12-25*.csv'), reverse=True)[:15]
+# This script is in src/qa/testing/, go up 3 levels to project root
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+
+files = sorted(glob.glob(os.path.join(PROJECT_ROOT, 'data/processed/archive/qa_results_2025-12-25*.csv')), reverse=True)[:15]
 
 print("Recent test results:")
 for f in files:

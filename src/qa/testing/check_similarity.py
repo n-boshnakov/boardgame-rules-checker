@@ -1,7 +1,11 @@
 import pandas as pd
 from rapidfuzz import fuzz
+import os
 
-df = pd.read_csv('data/processed/qa_results.csv')
+# This script is in src/qa/testing/, go up 3 levels to project root
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+
+df = pd.read_csv(os.path.join(PROJECT_ROOT, 'data/processed/qa_results.csv'))
 
 # Compute actual similarity scores
 sims = [fuzz.token_set_ratio(str(gt), str(pred)) for gt, pred in zip(df['ground_truth'], df['predicted'])]
