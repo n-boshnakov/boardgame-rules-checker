@@ -27,90 +27,176 @@ os.makedirs(ARCHIVE_DIR, exist_ok=True)
 if os.path.exists(CSV_CLEAN_PATH):
     shutil.copy(CSV_CLEAN_PATH, CSV_PATH)
 
-# NOTE: Answer generation logic has been moved to retriever.py
-# All answer generation now happens in RulebookRetriever.generate_answer()
-# This ensures a single source of truth for answer generation logic
-# NOTE: Answer generation logic has been moved to retriever.py
-# All answer generation now happens in RulebookRetriever.generate_answer()
-# This ensures a single source of truth for answer generation logic
+# NOTE: Answer generation logic is centralized in retriever.py
+# RulebookRetriever.generate_answer() is the single source of truth
 
 def main(args):
-    # Track start time
+    """Run QA evaluation batch on questions from CSV file.
+    
+    Args:
+        args: Command-line arguments from argparse
+        
+    Results:
+        Saves results to qa_results.csv and archives with timestamp
+    """
     start_time = time.time()
 
-    # Initialize Retriever with baseline configuration
+    # Initialize retriever with reranking enabled (CrossEncoder)
     retriever = RulebookRetriever(use_reranker=True)
 
-    df = pd.read_csv(CSV_PATH)
+    # Load questions from clean CSV
+    questions_df = pd.read_csv(CSV_PATH)
     if args.max_questions:
-        df = df.head(args.max_questions)
+        questions_df = questions_df.head(args.max_questions)
+        print(f"Processing first {args.max_questions} questions...")
 
     results = []
-    for i, row in tqdm(df.iterrows(), total=len(df), desc="Processing questions"):
+    for idx, row in tqdm(questions_df.iterrows(), total=len(questions_df), desc="Processing questions"):
         question = row['question']
         ground_truth = row['ground_truth']
         
-        # Search for relevant chunks with baseline configuration
-        answer_chunks = retriever.search(question, top_k=25, search_type="hybrid", hybrid_weight=0.85)
+        # Search for relevant chunks using hybrid search (85% semantic + 15% BM25)
+        retrieved_chunks = retriever.search(
+            question, 
+            top_k=25, 
+            search_type="hybrid", 
+            hybrid_weight=0.85
+        )
         
-        if not answer_chunks:
+        if not retrieved_chunks:
+            # No relevant chunks found - record failure
             results.append((question, ground_truth, "No chunks found", 0, None, None, None, None))
             continue
 
-        # Find which rank contains the best matching chunk (for diagnostics)
+        # Diagnostic: Find highest-ranked chunk that matches ground truth well
+        # This helps identify if retrieval is the bottleneck vs answer generation
         best_chunk_rank = None
         try:
             from rapidfuzz import fuzz
-            for rank, chunk in enumerate(answer_chunks, 1):
-                sim = fuzz.token_set_ratio(str(chunk['text']), str(ground_truth))
-                if sim >= 70:  # If chunk has >70% similarity to ground truth
+            for rank, chunk in enumerate(retrieved_chunks, 1):
+                chunk_text = str(chunk.get('text', ''))
+                similarity = fuzz.token_set_ratio(chunk_text, str(ground_truth))
+                if similarity >= 70:  # Found a chunk with >70% match to answer
                     best_chunk_rank = rank
                     break
-        except:
-            pass
+        except Exception:
+            pass  # Silently continue if diagnostic fails
 
-        # Generate answer using retriever's generate_answer method
-        # This is the single source of truth for answer generation
-        predicted_answer = retriever.generate_answer(question, answer_chunks)
+        # Generate answer from retrieved chunks
+        predicted_answer = retriever.generate_answer(question, retrieved_chunks)
         
-        # Calculate answer similarity to ground truth
+        # Calculate similarity between predicted answer and ground truth
         try:
             from rapidfuzz import fuzz
-            similarity_score = fuzz.token_set_ratio(str(predicted_answer), str(ground_truth)) / 100.0
-        except:
+            similarity_score = fuzz.token_set_ratio(
+                str(predicted_answer), 
+                str(ground_truth)
+            ) / 100.0  # Normalize to 0-1 range
+        except Exception:
             similarity_score = 0.0
         
-        # Get metadata from first chunk for reference
-        first_chunk = answer_chunks[0] if answer_chunks else {}
+        # Extract metadata from top-ranked chunk for reference
+        top_chunk = retrieved_chunks[0] if retrieved_chunks else {}
+        chunk_page = top_chunk.get('page')
+        chunk_section = top_chunk.get('section')
+        chunk_index = top_chunk.get('chunk_index')
 
-        results.append((question, ground_truth, predicted_answer, similarity_score, 
-                       first_chunk.get('page'), first_chunk.get('section'), 
-                       first_chunk.get('chunk_index'), best_chunk_rank))
+        results.append((
+            question, 
+            ground_truth, 
+            predicted_answer, 
+            similarity_score,
+            chunk_page, 
+            chunk_section, 
+            chunk_index, 
+            best_chunk_rank
+        ))
 
-    # Create a new DataFrame for the results
-    results_df = pd.DataFrame(results, columns=['question', 'ground_truth', 'predicted', 'score', 'page', 'section', 'chunk_index', 'best_chunk_rank'])
+    # Create DataFrame with results
+    results_df = pd.DataFrame(
+        results, 
+        columns=[
+            'question', 
+            'ground_truth', 
+            'predicted', 
+            'score', 
+            'page', 
+            'section', 
+            'chunk_index', 
+            'best_chunk_rank'
+        ]
+    )
 
-    # Calculate processing time
+    # Calculate performance metrics
     elapsed_time = int(time.time() - start_time)
+    mean_score = results_df['score'].mean()
+    passing_count = (results_df['score'] >= 0.8).sum()
     
-    # Save results with format: qa_results_YYYY-MM-DD_HH-MM-SS_XXs.csv
+    # Generate timestamped filename for archive
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_filename = f"data/processed/archive/qa_results_{timestamp}_{elapsed_time}s.csv"
+    archive_path = os.path.join(
+        PROJECT_ROOT,
+        f"data/processed/archive/qa_results_{timestamp}_{elapsed_time}s.csv"
+    )
+    current_path = os.path.join(PROJECT_ROOT, "data/processed/qa_results.csv")
     
-    # Overwrite qa_results.csv
-    results_df.to_csv("data/processed/qa_results.csv", index=False)
-    # Save archive copy
-    results_df.to_csv(output_filename, index=False)
-    print(f"\nQA results saved to {output_filename} and overwritten qa_results.csv")
+    # Save results to both current and archive locations
+    results_df.to_csv(current_path, index=False)
+    results_df.to_csv(archive_path, index=False)
+    
+    # Print summary
+    print(f"\n{'='*70}")
+    print(f"QA Batch Evaluation Complete")
+    print(f"{'='*70}")
+    print(f"Questions processed: {len(results_df)}")
+    print(f"Mean score: {mean_score:.2%}")
+    print(f"Passing (≥0.8): {passing_count}/{len(results_df)} ({passing_count/len(results_df):.1%})")
+    print(f"Processing time: {elapsed_time}s")
+    print(f"\nResults saved to:")
+    print(f"  Current: {current_path}")
+    print(f"  Archive: {archive_path}")
+    print(f"{'='*70}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run QA batch script.")
-    parser.add_argument("--max_questions", type=int, default=None, help="Maximum number of questions to process.")
-    parser.add_argument("--rerank_top_n", type=int, default=10, help="Number of top chunks to rerank with CrossEncoder (default: 10)")
-    parser.add_argument("--hybrid_weight", type=float, default=0.85, help="Weight for vector vs keyword in hybrid search (default: 0.85 = 85%% semantic, 15%% BM25)")
-    parser.add_argument("--search_type", type=str, default="hybrid", choices=["vector", "hybrid", "keyword"], help="Search type: vector (semantic only), hybrid (semantic+BM25), keyword (BM25 only)")
-    parser.add_argument("--semantic_selection", action="store_true", help="Use semantic sentence selection for answer generation (scores sentences by relevance)")
-    args = parser.parse_args()
-    main(args)
+    parser = argparse.ArgumentParser(
+        description="Run QA batch evaluation on rulebook questions.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python run_qa_batch.py --max_questions 10
+  python run_qa_batch.py --hybrid_weight 0.90 --rerank_top_n 15
+        """
+    )
+    parser.add_argument(
+        "--max_questions", 
+        type=int, 
+        default=None, 
+        help="Maximum number of questions to process (default: all)"
+    )
+    parser.add_argument(
+        "--rerank_top_n", 
+        type=int, 
+        default=10, 
+        help="Number of top chunks to rerank with CrossEncoder (default: 10)"
+    )
+    parser.add_argument(
+        "--hybrid_weight", 
+        type=float, 
+        default=0.85, 
+        help="Semantic weight in hybrid search: 0.85 = 85%% semantic + 15%% BM25 (default: 0.85)"
+    )
+    parser.add_argument(
+        "--search_type", 
+        type=str, 
+        default="hybrid", 
+        choices=["vector", "hybrid", "keyword"],
+        help="Search strategy: vector (semantic only), hybrid (semantic+BM25), keyword (BM25 only)"
+    )
+    parser.add_argument(
+        "--semantic_selection", 
+        action="store_true", 
+        help="Use semantic sentence selection for answer generation (experimental)"
+    )
+    
     args = parser.parse_args()
     main(args)

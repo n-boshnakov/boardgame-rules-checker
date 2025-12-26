@@ -1,35 +1,55 @@
+"""Compare QA results between baseline and new approach.
+
+Compares performance metrics, score distributions, and identifies
+questions that improved or regressed between two evaluation runs.
+"""
 import pandas as pd
 import numpy as np
 import os
 
-# This script is in src/qa/testing/, go up 3 levels to project root
+# Project root path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
-# Load new results
-new_df = pd.read_csv(os.path.join(PROJECT_ROOT, 'data/processed/qa_results.csv'))
+# File paths
+NEW_RESULTS = os.path.join(PROJECT_ROOT, 'data/processed/qa_results.csv')
+BASELINE_RESULTS = os.path.join(PROJECT_ROOT, 'data/processed/archive/qa_results_2025-12-26_12-51-00_22s.csv')
 
-# Load baseline (from archive)
-baseline_df = pd.read_csv(os.path.join(PROJECT_ROOT, 'data/processed/archive/qa_results_2025-12-26_12-51-00_22s.csv'))
+# Load results
+new_df = pd.read_csv(NEW_RESULTS)
+baseline_df = pd.read_csv(BASELINE_RESULTS)
 
 print("\n" + "="*80)
 print("SENTENCE EXTRACTION RESULTS COMPARISON")
 print("="*80)
 
-print("\n\nBASELINE (Chunk Concatenation):")
-print(f"  Mean Score: {baseline_df['score'].mean():.4f}")
-print(f"  Passing (≥0.8): {len(baseline_df[baseline_df['score'] >= 0.8])}/40 ({len(baseline_df[baseline_df['score'] >= 0.8])/40*100:.1f}%)")
-print(f"  Med Score: {baseline_df['score'].median():.4f}")
+# Baseline metrics
+baseline_mean = baseline_df['score'].mean()
+baseline_passing = len(baseline_df[baseline_df['score'] >= 0.8])
+baseline_median = baseline_df['score'].median()
 
-print("\n\nNEW (Sentence Extraction):")
-print(f"  Mean Score: {new_df['score'].mean():.4f}")
-print(f"  Passing (≥0.8): {len(new_df[new_df['score'] >= 0.8])}/40 ({len(new_df[new_df['score'] >= 0.8])/40*100:.1f}%)")
-print(f"  Med Score: {new_df['score'].median():.4f}")
+print(f"\nBASELINE (Chunk Concatenation):")
+print(f"  Mean Score:     {baseline_mean:.4f}")
+print(f"  Passing (≥0.8): {baseline_passing}/40 ({baseline_passing/40*100:.1f}%)")
+print(f"  Median Score:   {baseline_median:.4f}")
 
-print(f"\n\nCHANGE:")
-mean_diff = new_df['score'].mean() - baseline_df['score'].mean()
-passing_diff = len(new_df[new_df['score'] >= 0.8]) - len(baseline_df[baseline_df['score'] >= 0.8])
-print(f"  Mean Score: {mean_diff:+.4f} ({mean_diff/baseline_df['score'].mean()*100:+.1f}%)")
-print(f"  Passing: {passing_diff:+d} questions")
+# New metrics
+new_mean = new_df['score'].mean()
+new_passing = len(new_df[new_df['score'] >= 0.8])
+new_median = new_df['score'].median()
+
+print(f"\nNEW (Sentence Extraction):")
+print(f"  Mean Score:     {new_mean:.4f}")
+print(f"  Passing (≥0.8): {new_passing}/40 ({new_passing/40*100:.1f}%)")
+print(f"  Median Score:   {new_median:.4f}")
+
+# Calculate changes
+mean_diff = new_mean - baseline_mean
+mean_pct = (mean_diff / baseline_mean * 100) if baseline_mean > 0 else 0
+passing_diff = new_passing - baseline_passing
+
+print(f"\nCHANGE:")
+print(f"  Mean Score: {mean_diff:+.4f} ({mean_pct:+.1f}%)")
+print(f"  Passing:    {passing_diff:+d} questions")
 
 # Distribution analysis
 print("\n\n" + "="*80)

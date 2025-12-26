@@ -12,7 +12,7 @@ MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"  # 768 dims for quality
 
 class RulebookRetriever:
     def __init__(self, es_host: str = "http://localhost:9200", model_name: str = MODEL_NAME, use_reranker: bool = True):
-        self.es = Elasticsearch(es_host)
+        self.es = Elasticsearch(es_host, headers={"accept": "application/json", "content-type": "application/json"})
         print(f"[Retriever] Loading embedding model: {model_name}")
         self.model = SentenceTransformer(model_name)
         self.use_reranker = use_reranker
@@ -88,42 +88,6 @@ class RulebookRetriever:
             if section:
                 keyword_query["bool"]["filter"] = [{"term": {"section": section}}]
             keyword_res = self.es.search(index=ES_INDEX, body={"size": vec_size, "query": keyword_query})
-            keyword_hits = keyword_res.get("hits", {}).get("hits", [])                    ],
-                    "should": [
-                        {"match_phrase": {"text": {"query": expanded_query, "slop": 2, "boost": 2.0}}},
-                        {"match": {"text": {"query": expanded_query, "boost": 0.8}}}
-                    ],
-                    "minimum_should_match": 0
-                }
-            }
-            if section:
-                keyword_query["bool"]["filter"] = [{"term": {"section": section}}]
-            res = self.es.search(index=ES_INDEX, body={"size": top_k, "query": keyword_query})
-            return parse_hits(res)
-
-        elif search_type == "hybrid":
-            # Vector side: fetch more for merging (balanced, low overhead)
-            vec_size = max(top_k * 5, 25)
-            vector_res = self._vector_search_script(query_vec, size=vec_size, section=section)
-            vector_hits = vector_res.get("hits", {}).get("hits", [])
-
-            # Keyword side: prefer phrasing + and-operator; same pool size
-            # Use expanded query for better keyword matching
-            keyword_query = {
-                "bool": {
-                    "must": [
-                        {"match": {"text": {"query": expanded_query, "operator": "and"}}}
-                    ],
-                    "should": [
-                        {"match_phrase": {"text": {"query": expanded_query, "slop": 2, "boost": 2.0}}},
-                        {"match": {"text": {"query": expanded_query, "boost": 0.8}}}
-                    ],
-                    "minimum_should_match": 0
-                }
-            }
-            if section:
-                keyword_query["bool"]["filter"] = [{"term": {"section": section}}]
-            keyword_res = self.es.search(index=ES_INDEX, body={"size": vec_size, "query": keyword_query})
             keyword_hits = keyword_res.get("hits", {}).get("hits", [])
 
             # Merge with normalized scores
@@ -179,15 +143,90 @@ class RulebookRetriever:
 
         return combined
 
-    def generate_answer(self, question: str, chunks: List[Dict], multi_chunk_synthesis: bool = False) -> str:
-        """Generate answer using extractive method (800-char limit)."""
+    def generate_answer(self, question: str, chunks: List[Dict]) -> str:
+        """Generate answer by concatenating top relevant chunks (extractive method)."""
         if not chunks:
             return "No relevant information found."
         
         return self._generate_answer_extractive(question, chunks)
     
+    def _generate_answer_sentence_level(self, question: str, chunks: List[Dict]) -> str:
+        """Extract most relevant sentences from chunks using semantic similarity."""
+        # Extract all sentences from top chunks with their scores
+        sentence_candidates = []
+        
+        # Encode question once
+        question_embedding = self.model.encode(question, convert_to_tensor=True, normalize_embeddings=True)
+        
+        for chunk_idx, chunk in enumerate(chunks[:10]):
+            text = chunk.get("text", "")
+            if not text:
+                continue
+            
+            # Split into sentences
+            sentences = re.split(r'(?<=[.!?])\s+', text)
+            
+            for sent_idx, sentence in enumerate(sentences):
+                sentence = sentence.strip()
+                # Filter out very short or all-caps sentences
+                if len(sentence.split()) < 4 or (sentence.isupper() and len(sentence) < 50):
+                    continue
+                
+                # Encode sentence and compute similarity to question
+                sent_embedding = self.model.encode(sentence, convert_to_tensor=True, normalize_embeddings=True)
+                similarity = util.cos_sim(question_embedding, sent_embedding)[0][0].item()
+                
+                # Boost score for sentences in top-ranked chunks
+                position_boost = 1.0 / (chunk_idx + 1) * 0.3
+                final_score = similarity + position_boost
+                
+                sentence_candidates.append({
+                    'sentence': sentence,
+                    'score': final_score,
+                    'chunk_idx': chunk_idx,
+                    'sent_idx': sent_idx
+                })
+        
+        if not sentence_candidates:
+            return "No relevant information found."
+        
+        # Sort by score and select top sentences
+        sentence_candidates.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Build answer from top sentences (up to 600 chars for focused answers)
+        answer_parts = []
+        current_length = 0
+        max_length = 600
+        seen_sentences = set()
+        
+        for candidate in sentence_candidates:
+            sentence = candidate['sentence']
+            
+            # Skip duplicates or near-duplicates
+            sentence_normalized = re.sub(r'\s+', ' ', sentence.lower()).strip()
+            if sentence_normalized in seen_sentences:
+                continue
+            
+            # Add sentence if it fits
+            if current_length + len(sentence) <= max_length:
+                answer_parts.append(sentence)
+                current_length += len(sentence) + 1
+                seen_sentences.add(sentence_normalized)
+                
+                # Stop after getting 3-5 high-quality sentences
+                if len(answer_parts) >= 5 or (len(answer_parts) >= 3 and current_length > 300):
+                    break
+        
+        if not answer_parts:
+            # Fallback: use top chunk if no sentences passed filters
+            return chunks[0].get("text", "No relevant information found.")[:600]
+        
+        answer = " ".join(answer_parts)
+        answer = re.sub(r"\s+", " ", answer).strip()
+        return answer
+    
     def _generate_answer_extractive(self, question: str, chunks: List[Dict]) -> str:
-        """Extract text from top chunks with 800-char limit for fast, concise answers."""
+        """Legacy extractive method - kept for backwards compatibility."""
         # Build answer from chunks up to ~800 characters
         answer_parts = []
         current_length = 0
