@@ -1,20 +1,38 @@
-import fitz  # PyMuPDF
+import fitz  # PyMuPDF - for PDF page rendering
 from typing import List, Dict, Optional
 import re
 import json
 import os
 import logging
+from PIL import Image
+import io
 from spellcheck_utils import correct_spelling
 
+# OCR Libraries
+try:
+    import pytesseract
+    from pdf2image import convert_from_path
+    from pdf2image.exceptions import PDFInfoNotInstalledError
+    from pytesseract import TesseractNotFoundError
+    HAS_OCR = True
+except ImportError:
+    HAS_OCR = False
+    print("[Warning] OCR libraries not installed.")
+    print("[Warning] Install with: pip install pytesseract pdf2image pillow")
+    print("[Warning] Also install Tesseract-OCR: https://github.com/tesseract-ocr/tesseract")
+    print("[Warning] Also install Poppler: https://github.com/oschwartz10612/poppler-windows/releases/")
+    PDFInfoNotInstalledError = Exception  # Fallback for type hints
+    TesseractNotFoundError = Exception  # Fallback for type hints
+
 # Setup logging for skipped paragraphs
-SKIPPED_LOG_FILE = "skipped_paragraphs.log"
+SKIPPED_LOG_FILE = "skipped_paragraphs_ocr.log"
 logging.basicConfig(
     filename=SKIPPED_LOG_FILE,
     filemode='w',
     level=logging.INFO,
     format='%(asctime)s: %(message)s'
 )
-skipped_logger = logging.getLogger('skipped_paragraphs')
+skipped_logger = logging.getLogger('skipped_paragraphs_ocr')
 
 # Try to import ftfy for automatic unicode/encoding fixes
 try:
@@ -46,15 +64,15 @@ def load_ocr_corrections(config_path: str = "data/processed/pdf_ocr_corrections.
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
-                print(f"[Parser] Loaded OCR corrections from {config_path}")
+                print(f"[OCR Parser] Loaded OCR corrections from {config_path}")
                 _OCR_CORRECTIONS_CACHE = config
                 return config
         except Exception as e:
-            print(f"[Parser] Error loading OCR corrections from {config_path}: {e}")
-            print(f"[Parser] No OCR corrections will be applied")
+            print(f"[OCR Parser] Error loading OCR corrections from {config_path}: {e}")
+            print(f"[OCR Parser] No OCR corrections will be applied")
     else:
-        print(f"[Parser] OCR corrections file not found at {config_path}")
-        print(f"[Parser] Create this file to enable automatic OCR error correction")
+        print(f"[OCR Parser] OCR corrections file not found at {config_path}")
+        print(f"[OCR Parser] Create this file to enable automatic OCR error correction")
     
     # Return empty config if file doesn't exist or failed to load
     empty_config = {"character_map": {}, "word_patterns": []}
@@ -107,6 +125,149 @@ def fix_encoding_issues(text: str, config_path: str = "data/processed/pdf_ocr_co
             text = re.sub(pattern, replacement, text)
     
     return text
+
+
+def extract_text_with_ocr(pdf_path: str, output_folder: str = "data/ocr_extracted", poppler_path: Optional[str] = None, tesseract_cmd: Optional[str] = None) -> List[Dict]:
+    """
+    Extract text from PDF using OCR (Tesseract).
+    Saves each page's OCR text to a separate file in the output folder.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        output_folder: Folder to save OCR-extracted text files
+        poppler_path: Optional path to poppler binaries (Windows only)
+        tesseract_cmd: Optional path to tesseract executable (e.g., r'C:\Program Files\Tesseract-OCR\tesseract.exe')
+    
+    Returns:
+        List of dictionaries with page number and extracted text
+    """
+    if not HAS_OCR:
+        raise ImportError(
+            "OCR libraries not available.\n"
+            "Install with: pip install pytesseract pdf2image pillow\n"
+            "Also install Tesseract-OCR: https://github.com/tesseract-ocr/tesseract\n"
+            "Also install Poppler: https://github.com/oschwartz10612/poppler-windows/releases/"
+        )
+    
+    # Set tesseract command path if provided
+    if tesseract_cmd:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+    
+    # Set tesseract command path if provided
+    if tesseract_cmd:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+    
+    # Validate poppler path if provided
+    if poppler_path:
+        if not os.path.exists(poppler_path):
+            print(f"\n[OCR Parser] WARNING: Provided poppler_path does not exist: {poppler_path}")
+            print(f"[OCR Parser] Please check the path and try again.")
+            print(f"[OCR Parser] Common locations:")
+            print(f"  - C:\\poppler\\Library\\bin")
+            print(f"  - C:\\Program Files\\poppler\\Library\\bin")
+            raise FileNotFoundError(f"Poppler path not found: {poppler_path}")
+        else:
+            print(f"[OCR Parser] Using poppler from: {poppler_path}")
+    
+    # Create output folder structure
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Get the PDF filename without extension for the subfolder
+    pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    pdf_output_folder = os.path.join(output_folder, pdf_name)
+    os.makedirs(pdf_output_folder, exist_ok=True)
+    
+    print(f"[OCR Parser] Converting PDF to images and extracting text with OCR...")
+    print(f"[OCR Parser] Output folder: {pdf_output_folder}")
+    
+    # Open PDF to get page count
+    doc = fitz.open(pdf_path)
+    num_pages = len(doc)
+    doc.close()
+    
+    # Convert PDF pages to images
+    print(f"[OCR Parser] Processing {num_pages} pages...")
+    
+    ocr_results = []
+    
+    # Process each page
+    for page_num in range(num_pages):
+        print(f"[OCR Parser] Processing page {page_num + 1}/{num_pages}...")
+        
+        try:
+            # Convert single page to image using pdf2image
+            # Add poppler_path parameter if provided (Windows)
+            convert_kwargs = {
+                'pdf_path': pdf_path,
+                'first_page': page_num + 1,
+                'last_page': page_num + 1,
+                'dpi': 300  # Higher DPI for better OCR quality
+            }
+            
+            if poppler_path:
+                convert_kwargs['poppler_path'] = poppler_path
+            
+            images = convert_from_path(**convert_kwargs)
+        except PDFInfoNotInstalledError:
+            print("\n" + "="*70)
+            print("ERROR: Poppler is not installed or not in PATH!")
+            print("="*70)
+            print("\nFor Windows users:")
+            print("1. Download poppler from: https://github.com/oschwartz10612/poppler-windows/releases/")
+            print("2. Extract the zip file (e.g., to C:\\poppler)")
+            print("3. Either:")
+            print("   a) Add C:\\poppler\\Library\\bin to your system PATH, OR")
+            print("   b) Pass poppler_path parameter: extract_text_with_ocr(pdf_path, poppler_path=r'C:\\poppler\\Library\\bin')")
+            print("\nFor Linux users:")
+            print("   sudo apt-get install poppler-utils")
+            print("\nFor Mac users:")
+            print("   brew install poppler")
+            print("="*70 + "\n")
+            raise
+        
+        if not images:
+            print(f"[OCR Parser] Warning: Could not convert page {page_num + 1} to image")
+            continue
+        
+        # Extract text using Tesseract OCR
+        page_image = images[0]
+        
+        try:
+            ocr_text = pytesseract.image_to_string(page_image, lang='eng')
+        except TesseractNotFoundError:
+            print("\n" + "="*70)
+            print("ERROR: Tesseract OCR is not installed or not in PATH!")
+            print("="*70)
+            print("\nFor Windows users:")
+            print("1. Download Tesseract installer from:")
+            print("   https://github.com/UB-Mannheim/tesseract/wiki")
+            print("2. Install it (default location: C:\\Program Files\\Tesseract-OCR)")
+            print("3. Either:")
+            print("   a) Add C:\\Program Files\\Tesseract-OCR to your system PATH, OR")
+            print("   b) Pass tesseract_cmd parameter when calling the function")
+            print("\nFor Linux users:")
+            print("   sudo apt-get install tesseract-ocr")
+            print("\nFor Mac users:")
+            print("   brew install tesseract")
+            print("="*70 + "\n")
+            raise
+        
+        # Save OCR text to file
+        page_text_file = os.path.join(pdf_output_folder, f"page_{page_num + 1:03d}.txt")
+        with open(page_text_file, 'w', encoding='utf-8') as f:
+            f.write(ocr_text)
+        
+        print(f"[OCR Parser] Saved OCR text to {page_text_file}")
+        
+        ocr_results.append({
+            'page': page_num + 1,
+            'text': ocr_text,
+            'file': page_text_file
+        })
+    
+    print(f"[OCR Parser] OCR extraction complete. Extracted text from {len(ocr_results)} pages.")
+    
+    return ocr_results
 
 
 def detect_and_format_table(text: str) -> str:
@@ -458,13 +619,13 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
         # Check if we're entering credits or components section
         if credits_regex.search(text.lower()):
             in_credits_section = True
-            print(f"[Parser] Entering credits section on page {page}")
+            print(f"[OCR Parser] Entering credits section on page {page}")
             skipped_logger.info(f"[SKIPPED - Second credits filtering] {text}")
             continue
         
         if re.search(r"component\s*list|game\s*components", text.lower()):
             in_components_section = True
-            print(f"[Parser] Entering components section on page {page}")
+            print(f"[OCR Parser] Entering components section on page {page}")
             continue
         
         # Skip if in credits or components section
@@ -473,20 +634,20 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
             if is_all_caps_section(text) and len(text.split()) >= 2:
                 in_credits_section = False
                 in_components_section = False
-                print(f"[Parser] Exiting credits/components section")
+                print(f"[OCR Parser] Exiting credits/components section")
             else:
                 continue
         
         # Skip Example paragraphs
         if should_skip_example(text):
-            print(f"[Parser] Skipping Example paragraph on page {page}")
+            print(f"[OCR Parser] Skipping Example paragraph on page {page}")
             continue
         
         # Check if this is an ALL CAPS section heading (with content validation)
         if is_all_caps_section(text):
             # Validate that this is a real section heading, not a card scan
             if not has_substantial_content_after(paragraphs, idx):
-                print(f"[Parser] Skipping card scan/image caption: {text[:50]}")
+                print(f"[OCR Parser] Skipping card scan/image caption: {text[:50]}")
                 continue
             
             # Save previous chunk
@@ -496,14 +657,14 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
             current_section = text
             current_subsection = None
             current_page = page
-            print(f"[Parser] Found section heading: {text.encode('ascii', errors='replace').decode('ascii')}")
+            print(f"[OCR Parser] Found section heading: {text.encode('ascii', errors='replace').decode('ascii')}")
             continue
         
         # Check if this is a Title Case subsection heading
         if is_title_case_heading(text):
             # Validate that this is a real subsection heading
             if not has_substantial_content_after(paragraphs, idx):
-                print(f"[Parser] Skipping potential image caption: {text[:50]}")
+                print(f"[OCR Parser] Skipping potential image caption: {text[:50]}")
                 # Treat as regular content
                 if current_page is None:
                     current_page = page
@@ -517,7 +678,7 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
             current_subsection = text
             current_chunk_text = [text]
             current_page = page
-            print(f"[Parser] Found subsection heading: {text.encode('ascii', errors='replace').decode('ascii')}")
+            print(f"[OCR Parser] Found subsection heading: {text.encode('ascii', errors='replace').decode('ascii')}")
             continue
         
         # Regular content - add to current chunk
@@ -552,8 +713,8 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
     # Save final chunk
     save_current_chunk()
     
-    print(f"[Parser] Created {len(chunks)} aggressive paragraph-level chunks from {len(paragraphs)} paragraphs")
-    print(f"[Parser] Target: 80-120 chunks, Achieved: {len(chunks)} chunks")
+    print(f"[OCR Parser] Created {len(chunks)} aggressive paragraph-level chunks from {len(paragraphs)} paragraphs")
+    print(f"[OCR Parser] Target: 80-120 chunks, Achieved: {len(chunks)} chunks")
     
     # Calculate and report statistics
     chunk_sizes = [len(c['text']) for c in chunks]
@@ -561,16 +722,17 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
         avg_size = sum(chunk_sizes) / len(chunk_sizes)
         max_size = max(chunk_sizes)
         min_size = min(chunk_sizes)
-        print(f"[Parser] Chunk size stats - Avg: {avg_size:.0f} chars, Min: {min_size}, Max: {max_size}")
+        print(f"[OCR Parser] Chunk size stats - Avg: {avg_size:.0f} chars, Min: {min_size}, Max: {max_size}")
         over_1000 = sum(1 for s in chunk_sizes if s > 1000)
-        print(f"[Parser] Chunks over 1000 chars: {over_1000}/{len(chunks)} ({over_1000/len(chunks)*100:.1f}%)")
+        print(f"[OCR Parser] Chunks over 1000 chars: {over_1000}/{len(chunks)} ({over_1000/len(chunks)*100:.1f}%)")
     
     return chunks
 
 
-def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_chars: int = 1000, overlap_chars: int = 150) -> List[Dict]:
+def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_chars: int = 1000, overlap_chars: int = 150, poppler_path: Optional[str] = None, tesseract_cmd: Optional[str] = None) -> List[Dict]:
     """
-    Parses a PDF rulebook and returns a list of chunks with metadata.
+    Parses a PDF rulebook using OCR and returns a list of chunks with metadata.
+    Extracts text via OCR and saves to separate folder before processing.
     Skips irrelevant sections (credits, table of contents, ads, thanks, etc.).
     Cleans headers/footers and ensures all content is chunked properly.
     Extracts section names from content semantically.
@@ -580,11 +742,23 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
         doc_type: Type of document (default "rulebook")
         max_chunk_chars: Maximum characters per chunk (default 1000 for optimal context)
         overlap_chars: Characters to overlap between chunks (default 150 for better context)
+        poppler_path: Optional path to poppler binaries (Windows only)
+        tesseract_cmd: Optional path to tesseract executable (Windows: r'C:\Program Files\Tesseract-OCR\tesseract.exe')
     
     Returns:
         List of chunk dictionaries with text, metadata, and context
     """
-    doc = fitz.open(pdf_path)
+    if not HAS_OCR:
+        raise ImportError(
+            "OCR libraries not available.\n"
+            "Install with: pip install pytesseract pdf2image pillow\n"
+            "Also install Tesseract-OCR: https://github.com/tesseract-ocr/tesseract\n"
+            "Also install Poppler: https://github.com/oschwartz10612/poppler-windows/releases/"
+        )
+    
+    # Step 1: Extract text using OCR and save to folder
+    ocr_results = extract_text_with_ocr(pdf_path, poppler_path=poppler_path, tesseract_cmd=tesseract_cmd)
+    
     chunks = []
     skip_patterns = [
         r"table of contents", r"^\s*thank you", r"special thanks", r"credits", r"designed by", r"illustrated by",
@@ -592,14 +766,14 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
         r"^\s*component list", r"^game components$", r"^box contents$", r"^in the box$", r"^you should have$", r"^this game includes$",
         # Enhanced TOC detection
         r"^\s*table\s+of\s+contents\s*$", r"^\s*contents\s*$",
-        r"\.\s*\.\s*\.\s*\.+\s*\d+\s*$",  # TOC entries with dots leading to page numbers (e.g., "Credits........ 3")
+        r"\.\s*\.\s*\.\s*\.+\s*\d+\s*$",  # TOC entries with dots leading to page numbers
         r"^\d+\s*$",  # Standalone page numbers
         # Credits section patterns
         r"narrative\s+design:", r"writing:", r"proofreading:", r"graphic\s+design:", 
         r"3d\s+modelling:", r"dtp:", r"production:",
         r"tests?\s+and\s+development:", r"internal\s+testing:",
         r"rulebook\s+&\s+gameplay", r"game\s+world\s+team:", r"dedicated\s+to",
-        # Component list patterns - only match quantity in component list context
+        # Component list patterns
         r"^\d+x\s+", r"^\d+\s+x\s+", r"^\d+\s*x.*quantity", r"^\s*component\s+type"
     ]
     skip_regex = re.compile("|".join(skip_patterns), re.IGNORECASE)
@@ -612,53 +786,24 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
 
     from datetime import datetime
     dt_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    corrections_csv_path = "data/processed/corrections.csv"
-    corrections_archive_path = f"data/processed/archive/corrections_{dt_str}.csv"
-    unique_terms_path = "data/processed/unique_terms.csv"
-    word_fragments_path = "data/processed/word_fragments.csv"
+    corrections_csv_path = "data/processed/corrections_ocr.csv"
+    corrections_archive_path = f"data/processed/archive/corrections_ocr_{dt_str}.csv"
+    unique_terms_path = "data/processed/unique_terms_ocr.csv"
+    word_fragments_path = "data/processed/word_fragments_ocr.csv"
     section_headers = set()
     
-    # First pass: collect all paragraphs with their page numbers
+    # First pass: collect all paragraphs with their page numbers from OCR results
     all_paragraphs = []
     
-    for page_num in range(len(doc)):
-        page = doc[page_num]
+    for ocr_page in ocr_results:
+        page_num = ocr_page['page'] - 1  # Convert to 0-indexed
+        text = ocr_page['text']
         
         # Check if we're potentially in TOC section
         if page_num < toc_page_limit:
             in_toc_section = True
         else:
             in_toc_section = False
-        
-        # Use layout-aware text extraction with "dict" mode
-        # This preserves text blocks and their positioning
-        try:
-            # Extract with layout preservation
-            page_dict = page.get_text("dict")
-            text_blocks = []
-            
-            for block in page_dict.get("blocks", []):
-                if block.get("type") == 0:  # Text block
-                    block_lines = []
-                    for line in block.get("lines", []):
-                        line_text = ""
-                        for span in line.get("spans", []):
-                            line_text += span.get("text", "")
-                        if line_text.strip():
-                            block_lines.append(line_text.strip())
-                    
-                    if block_lines:
-                        # Join lines in a block with single newline
-                        block_text = "\n".join(block_lines)
-                        text_blocks.append(block_text)
-            
-            # Join blocks with double newline to separate paragraphs
-            text = "\n\n".join(text_blocks)
-            
-        except Exception as e:
-            # Fallback to simple text extraction if layout parsing fails
-            print(f"[Parser] Layout extraction failed on page {page_num + 1}, using simple method: {e}")
-            text = page.get_text("text")
         
         # Fix encoding issues BEFORE any other processing
         text = fix_encoding_issues(text)
@@ -691,8 +836,7 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
             if re.fullmatch(r"\d{1,3}", clean_para):
                 continue
 
-            # Don't skip section headers anymore - we need them for section-based chunking
-            # Just collect them for later reference
+            # Don't skip section headers - we need them for section-based chunking
             first_line = clean_para.split("\n")[0].strip()
             if (len(first_line) <= 40 and (first_line.isupper() or sum(1 for c in first_line if c.isupper()) > 3)):
                 section_headers.add(first_line)
@@ -705,7 +849,7 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
                 'page': page_num + 1
             })
     
-    print(f"[Parser] Extracted {len(all_paragraphs)} paragraphs from {len(doc)} pages")
+    print(f"[OCR Parser] Extracted {len(all_paragraphs)} paragraphs from {len(ocr_results)} OCR pages")
 
     # Apply new section-based chunking logic
     section_chunks = chunk_by_sections(all_paragraphs)
@@ -725,7 +869,7 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
             unique_terms_file=unique_terms_path,
             word_fragments_file=word_fragments_path
         )
-        print(f"[Parser] Spellchecked chunk {idx+1}/{len(section_chunks)} (page {page_num}, section: {section}): {chunk_text[:40]}...")
+        print(f"[OCR Parser] Spellchecked chunk {idx+1}/{len(section_chunks)} (page {page_num}, section: {section}): {chunk_text[:40]}...")
         corrected_text = spell_result['corrected_text'] if isinstance(spell_result, dict) else spell_result
 
         # Create final chunk entry
@@ -736,15 +880,15 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
             "subsection": subsection,
             "doc_type": doc_type,
             "chunk_index": idx,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "extraction_method": "OCR"
         }
         chunks.append(chunk)
     
-    print(f"[Parser] Created {len(chunks)} total chunks from {len(section_chunks)} section-based chunks")
+    print(f"[OCR Parser] Created {len(chunks)} total chunks from {len(section_chunks)} section-based chunks")
     
     # Save section headers for answer filtering
-    import os
-    section_headers_path = "data/processed/section_headers.txt"
+    section_headers_path = "data/processed/section_headers_ocr.txt"
     os.makedirs(os.path.dirname(section_headers_path), exist_ok=True)
     with open(section_headers_path, "w", encoding="utf-8") as shf:
         for header in sorted(section_headers):
@@ -758,113 +902,140 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
     import shutil
     try:
         shutil.copyfile(corrections_csv_path, corrections_archive_path)
-        print(f"[Parser] Archived corrections file to {corrections_archive_path}")
+        print(f"[OCR Parser] Archived corrections file to {corrections_archive_path}")
     except Exception as e:
-        print(f"[Parser] Could not archive corrections file: {e}")
+        print(f"[OCR Parser] Could not archive corrections file: {e}")
 
     # Learn OCR patterns from corrections and update configuration
     try:
         from ocr_learning import update_ocr_corrections_from_learning
-        print("\n[Parser] Analyzing corrections to learn OCR patterns...")
+        print("\n[OCR Parser] Analyzing corrections to learn OCR patterns...")
         learned = update_ocr_corrections_from_learning(
             corrections_csv_path,
             ocr_config_path="data/processed/pdf_ocr_corrections.json"
         )
         if learned:
-            print("[Parser] ✓ OCR corrections updated! Re-run parser to apply new patterns.\n")
+            print("[OCR Parser] ✓ OCR corrections updated! Re-run parser to apply new patterns.\n")
     except Exception as e:
-        print(f"[Parser] Could not update OCR corrections: {e}")
+        print(f"[OCR Parser] Could not update OCR corrections: {e}")
     
     return chunks
+
 
 if __name__ == "__main__":
     import sys
     import os
     import pickle
-    # Step 1: Parse PDF and extract unique terms from content
-    unique_terms_path = "data/processed/unique_terms.csv"
-
+    
     if len(sys.argv) < 2:
-        print("Usage: python pdf_parser.py <pdf_path> [output_pickle]")
+        print("Usage: python pdf_parser_ocr.py <pdf_path> [output_pickle] [poppler_path] [tesseract_path]")
+        print("\nExample (with paths for Windows):")
+        print('  python pdf_parser_ocr.py rulebook.pdf chunks.pkl "C:\\poppler-XX.XX.X\\Library\\bin" "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"')
+        print("\nNote: Requires Tesseract OCR and Poppler to be installed.")
+        print("  Tesseract: https://github.com/UB-Mannheim/tesseract/wiki")
+        print("  Poppler: https://github.com/oschwartz10612/poppler-windows/releases/")
+        print("\nTo find your poppler path:")
+        print("  1. Look in the folder where you extracted poppler")
+        print("  2. Find the 'Library\\bin' subfolder (e.g., C:\\poppler-24.08.0\\Library\\bin)")
+        print("  3. That folder should contain pdftoppm.exe and pdfinfo.exe")
         sys.exit(1)
+    
     from datetime import datetime
     pdf_path = sys.argv[1]
+    
     if len(sys.argv) > 2:
         out_path = sys.argv[2]
     else:
-        out_path = os.path.join("data", "processed", "chunks.pkl")
+        out_path = os.path.join("data", "processed", "chunks_ocr.pkl")
+    
+    # Optional poppler path for Windows
+    poppler_path = sys.argv[3] if len(sys.argv) > 3 else None
+    
+    # Optional tesseract path for Windows
+    tesseract_cmd = sys.argv[4] if len(sys.argv) > 4 else None
+    
     # Always create archive copy with date-time
     dt_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     archive_dir = os.path.join("data", "processed", "archive")
     os.makedirs(archive_dir, exist_ok=True)
-    archive_pkl = os.path.join(archive_dir, f"chunks_{dt_str}.pkl")
-    archive_json = os.path.join(archive_dir, f"chunks_{dt_str}.json")
-    chunks = parse_pdf_rulebook(pdf_path)
+    archive_pkl = os.path.join(archive_dir, f"chunks_ocr_{dt_str}.pkl")
+    archive_json = os.path.join(archive_dir, f"chunks_ocr_{dt_str}.json")
+    
+    chunks = parse_pdf_rulebook(pdf_path, poppler_path=poppler_path, tesseract_cmd=tesseract_cmd)
+    
     # Extract unique terms from all chunked text
     import re
     import requests
     all_text = " ".join(chunk["text"] for chunk in chunks)
-    # Find capitalized words (not just sentence-initial) and all-uppercase words (acronyms/terms)
-    # Split by sentence endings with better handling of sentence boundaries
+    
+    # Find capitalized words and all-uppercase words
     sentence_end_re = re.compile(r'(?<=[.!?])\s+')
     sentences = sentence_end_re.split(all_text)
     capitalized_words = set()
     fully_upper_words = set()
+    
     for sent in sentences:
-        # Strip leading/trailing whitespace and skip empty sentences
         sent = sent.strip()
         if not sent:
             continue
         
         words_in_sent = re.findall(r"\b\w+\b", sent)
         for i, word in enumerate(words_in_sent):
-            # IMPORTANT: Skip first word of each sentence (sentence-initial capitalization)
+            # Skip first word of each sentence
             if i == 0:
                 continue
             
-            # Add all-uppercase words/acronyms FIRST (e.g., "HP", "XP", "ARTIFACT")
-            # This catches 2+ character acronyms before the length check
+            # Add all-uppercase words/acronyms
             if re.match(r"^[A-Z]{2,}$", word):
                 fully_upper_words.add(word)
-                continue  # Skip remaining checks for this word
+                continue
             
-            # Only add words with 3+ characters to avoid single initials/abbreviations
-            # (All-uppercase acronyms already handled above)
+            # Only add words with 3+ characters
             if len(word) < 3:
                 continue
             
-            # Add capitalized words (e.g., "Stalker", "Anomaly", "Psionic")
+            # Add capitalized words
             if re.match(r"^[A-Z][a-zA-Z0-9\-]{2,}$", word):
                 capitalized_words.add(word)
-    # Add all fully capitalized words from chunked text (excluding section titles)
+    
     words = capitalized_words.union(fully_upper_words)
-    # Download and use stopwords list to filter out common English words
+    
+    # Download stopwords list
     stopwords_list = requests.get("https://gist.githubusercontent.com/rg089/35e00abf8941d72d419224cfd5b5925d/raw/12d899b70156fd0041fa9778d657330b024b959c/stopwords.txt").content
     stopwords = set(stopwords_list.decode().splitlines())
-    # Normalize all terms for comparison (lowercase, strip)
+    
     def normalize(term):
         return term.lower().strip()
+    
     normalized_stopwords = set(normalize(sw) for sw in stopwords)
     normalized_words = {normalize(w): w for w in words}
     filtered_words = [original for norm, original in normalized_words.items() if norm not in normalized_stopwords]
-    # Write unique terms to CSV (original form, sorted by normalized)
+    
+    # Write unique terms to CSV
+    unique_terms_path = "data/processed/unique_terms_ocr.csv"
     os.makedirs(os.path.dirname(unique_terms_path), exist_ok=True)
     for_write = [normalized_words[n] for n in sorted(normalized_words) if n in {normalize(w) for w in filtered_words}]
     with open(unique_terms_path, "w", encoding="utf-8") as f:
         for w in for_write:
             f.write(w + "\n")
+    
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    # Save main chunk file (no date-time)
+    
+    # Save main chunk file
     with open(out_path, "wb") as f:
         pickle.dump(chunks, f)
-    # Save archive copy with date-time
+    
+    # Save archive copies
     with open(archive_pkl, "wb") as f:
         pickle.dump(chunks, f)
+    
     with open(archive_json, "w", encoding="utf-8") as jf:
         json.dump(chunks, jf, indent=2, ensure_ascii=False)
+    
     print(f"Saved {len(chunks)} chunks to {out_path}")
     print(f"Archived {len(chunks)} chunks to {archive_pkl} and {archive_json}")
     print(f"Extracted {len(chunks)} chunks.")
     print(f"Extracted {len(words)} unique terms to {unique_terms_path}")
+    
     for c in chunks[:3]:
         print(c)
