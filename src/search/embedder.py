@@ -1,7 +1,7 @@
 """Generate embeddings for text chunks using sentence transformers.
 
 This module creates dense vector embeddings from text chunks for semantic search.
-Uses the all-mpnet-base-v2 model (768 dimensions) for high-quality embeddings.
+Uses the BAAI/bge-m3 model (1024 dimensions) - hybrid sparse/dense, excellent cross-domain.
 """
 import pandas as pd
 from sentence_transformers import SentenceTransformer
@@ -18,11 +18,11 @@ class Embedder:
         model_name: Name/path of the embedding model
     """
     
-    def __init__(self, model_name='sentence-transformers/all-mpnet-base-v2'):
+    def __init__(self, model_name='BAAI/bge-m3'):
         """Initialize embedder with specified model.
         
         Args:
-            model_name: HuggingFace model identifier (default: all-mpnet-base-v2 with 768 dims)
+            model_name: HuggingFace model identifier (default: bge-m3 with 1024 dims)
         """
         print(f"[Embedder] Loading model: {model_name}")
         self.model = SentenceTransformer(model_name)

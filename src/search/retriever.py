@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 ES_INDEX = "rulebook_chunks"
-MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"  # 768 dims for quality
+MODEL_NAME = "BAAI/bge-m3"  # 1024 dims, better cross-domain
 
 class RulebookRetriever:
     def __init__(self, es_host: str = "http://localhost:9200", model_name: str = MODEL_NAME, use_reranker: bool = True):

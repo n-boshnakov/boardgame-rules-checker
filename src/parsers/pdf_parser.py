@@ -200,6 +200,46 @@ def extract_section_from_content(text: str, prev_section: Optional[str] = None) 
     return prev_section
 
 
+def is_corrupted_text(text: str) -> bool:
+    """Check if text contains corrupted OCR artifacts.
+    
+    Detects patterns like excessive repeated characters (e.g., 'eeeeesecesceeeseeeeseeeeeeeeeeeeeees')
+    which are OCR artifacts from dot leaders or page formatting.
+    
+    Args:
+        text: Text string to check
+        
+    Returns:
+        True if text appears corrupted, False otherwise
+    """
+    if not isinstance(text, str) or len(text) < 20:
+        return False
+    
+    # Check for sequences of 8+ repeated characters (ignoring spaces)
+    # Pattern: same letter/dot repeated 8+ times
+    if re.search(r'([a-z])\1{7,}', text.lower()):
+        return True
+    
+    # Check for excessive punctuation noise (e.g., "......")
+    if re.search(r'\.{8,}', text):
+        return True
+    
+    # Check for patterns like "ccccc" mixed with other chars (OCR table of contents)
+    # Count sequences of 5+ repeated chars
+    repeated_sequences = re.findall(r'([a-z])\1{4,}', text.lower())
+    if len(repeated_sequences) >= 3:  # Multiple sequences of repeated chars
+        return True
+    
+    # Check for nonsensical character sequences (20+ chars with <50% vowels and spaces)
+    text_clean = re.sub(r'[^a-zA-Z ]', '', text)
+    if len(text_clean) > 20:
+        vowels = len(re.findall(r'[aeiouAEIOU ]', text_clean))
+        if vowels / len(text_clean) < 0.15:  # Less than 15% vowels/spaces
+            return True
+    
+    return False
+
+
 def chunk_text_with_overlap(text: str, max_chars: int = 1000, overlap_chars: int = 150) -> List[str]:
     """
     Splits text into overlapping chunks that respect sentence boundaries.
@@ -769,34 +809,34 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
                 # Skip very short paragraphs (but not too aggressively)
                 if len(clean_para) < 20:
                     continue
-            
-            # Skip sections matching skip patterns
-            if skip_regex.search(clean_para):
-                skipped_logger.info(f"[SKIPPED - Pattern Match] Page {page_num + 1}: {clean_para}")
-                continue
-            
-            # Enhanced TOC detection: skip paragraphs with dotted lines and page numbers
-            if in_toc_section and (re.search(r'\.\s*\.\s*\.', clean_para) or re.search(r'\s*\d+\s*$', clean_para)):
-                skipped_logger.info(f"[SKIPPED - TOC Entry] Page {page_num + 1}: {clean_para}")
-                continue
-            
-            # Skip page numbers
-            if re.fullmatch(r"\d{1,3}", clean_para):
-                continue
+                
+                # Skip sections matching skip patterns
+                if skip_regex.search(clean_para):
+                    skipped_logger.info(f"[SKIPPED - Pattern Match] Page {page_num + 1}: {clean_para}")
+                    continue
+                
+                # Enhanced TOC detection: skip paragraphs with dotted lines and page numbers
+                if in_toc_section and (re.search(r'\.\s*\.\s*\.', clean_para) or re.search(r'\s*\d+\s*$', clean_para)):
+                    skipped_logger.info(f"[SKIPPED - TOC Entry] Page {page_num + 1}: {clean_para}")
+                    continue
+                
+                # Skip page numbers
+                if re.fullmatch(r"\d{1,3}", clean_para):
+                    continue
 
-            # Don't skip section headers anymore - we need them for section-based chunking
-            # Just collect them for later reference
-            first_line = clean_para.split("\n")[0].strip()
-            if (len(first_line) <= 40 and (first_line.isupper() or sum(1 for c in first_line if c.isupper()) > 3)):
-                section_headers.add(first_line)
-            
-            # Detect and format tables
-            clean_para = detect_and_format_table(clean_para)
-            
-            all_paragraphs.append({
-                'text': clean_para,
-                'page': page_num + 1
-            })
+                # Don't skip section headers anymore - we need them for section-based chunking
+                # Just collect them for later reference
+                first_line = clean_para.split("\n")[0].strip()
+                if (len(first_line) <= 40 and (first_line.isupper() or sum(1 for c in first_line if c.isupper()) > 3)):
+                    section_headers.add(first_line)
+                
+                # Detect and format tables
+                clean_para = detect_and_format_table(clean_para)
+                
+                all_paragraphs.append({
+                    'text': clean_para,
+                    'page': page_num + 1
+                })
     
     print(f"[Parser] Extracted {len(all_paragraphs)} paragraphs from {len(doc) if doc else len(ocr_files)} pages")
 
@@ -852,6 +892,12 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
             )
             print(f"[Parser] Spellchecked chunk {idx+1}/{len(section_chunks)} (page {page_num}, section: {section}): {chunk_text[:40]}...")
         corrected_text = spell_result['corrected_text'] if isinstance(spell_result, dict) else spell_result
+
+        # Filter out corrupted OCR text
+        if is_corrupted_text(corrected_text):
+            skipped_logger.info(f"[SKIPPED - Corrupted OCR text] Page {page_num}, Section {section}: {corrected_text[:100]}...")
+            print(f"[Parser] Skipped corrupted chunk {idx+1} (page {page_num}): {corrected_text[:50]}...")
+            continue
 
         # Create final chunk entry
         chunk = {

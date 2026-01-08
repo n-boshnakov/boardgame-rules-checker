@@ -11,7 +11,7 @@ import sys
 
 # Index configuration
 ES_INDEX = "rulebook_chunks"
-EMBEDDING_DIMS = 768  # all-mpnet-base-v2 model dimension
+EMBEDDING_DIMS = 1024  # BAAI/bge-m3 model dimension
 
 # Elasticsearch mapping schema
 MAPPING = {
