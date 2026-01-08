@@ -8,6 +8,7 @@ from elasticsearch import Elasticsearch, helpers
 import numpy as np
 import os
 import sys
+import ast
 
 # Index configuration
 ES_INDEX = "rulebook_chunks"
@@ -82,7 +83,6 @@ def load_embeddings(parquet_path: str) -> pd.DataFrame:
             
             # String representation (try to parse)
             if isinstance(embedding, str):
-                import ast
                 try:
                     parsed = ast.literal_eval(embedding)
                     if isinstance(parsed, (list, tuple, np.ndarray)):

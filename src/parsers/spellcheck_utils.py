@@ -1,31 +1,12 @@
 import re
 from typing import List
+import csv
+import os
+
 try:
     from spellchecker import SpellChecker
 except ImportError:
     SpellChecker = None
-
-def correct_spelling(text: str, language: str = 'en') -> str:
-    """
-    Corrects spelling mistakes in the given text using pyspellchecker.
-    Only works for English. Returns the corrected text.
-    """
-    if SpellChecker is None:
-        return text  # fallback: do nothing if not installed
-    spell = SpellChecker(language=language)
-    def correct_word(word):
-        # Only correct alphabetic words
-        if not word.isalpha():
-            return word
-        corrected = spell.correction(word)
-        return corrected if corrected else word
-    # Tokenize by word boundaries
-    tokens = re.findall(r"\w+|\W+", text)
-    corrected = [correct_word(tok) if tok.isalpha() else tok for tok in tokens]
-    return ''.join(corrected)
-
-import csv
-import os
 def correct_spelling(
     text: str,
     language: str = 'en',

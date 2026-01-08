@@ -131,8 +131,8 @@ class RulebookRetriever:
             pairs = [[query, c["text"]] for c in combined[:top_n]]
             try:
                 scores = self.cross_encoder.predict(pairs)
-                for i in range(top_n):
-                    combined[i]["cross_encoder_score"] = float(scores[i])
+                for i, score in enumerate(scores):
+                    combined[i]["cross_encoder_score"] = float(score)
                 # Default score for the rest to preserve order
                 for j in range(top_n, len(combined)):
                     combined[j]["cross_encoder_score"] = combined[j].get("score", 0.0)

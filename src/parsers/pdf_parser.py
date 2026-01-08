@@ -354,12 +354,12 @@ def is_title_case_heading(text: str) -> bool:
     # Skip if it contains colons (likely credits like "Design: Name")
     if ':' in text:
         skipped_logger.info(f"[SKIPPED - TitleCase Entry due to :] {text}")
-        # return False
+        return False
     
     # Skip if ends with comma or "and" (likely list items)
     if text.strip().endswith(',') or text.strip().endswith('and'):
         skipped_logger.info(f"[SKIPPED - TitleCase Entry due to , or and] {text}")
-        # return False
+        return False
     
     # Title case: most significant words start with uppercase
     significant_words = [w for w in words if len(w) > 2]
@@ -538,7 +538,7 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
             current_section = text
             current_subsection = None
             current_page = page
-            print(f"[Parser] Found section heading: {text.encode('ascii', errors='replace').decode('ascii')}")
+            print(f"[Parser] Found section heading: {text[:50]}..." if len(text) > 50 else f"[Parser] Found section heading: {text}")
             continue
         
         # Check if this is a Title Case subsection heading
@@ -559,7 +559,7 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
             current_subsection = text
             current_chunk_text = [text]
             current_page = page
-            print(f"[Parser] Found subsection heading: {text.encode('ascii', errors='replace').decode('ascii')}")
+            print(f"[Parser] Found subsection heading: {text[:50]}..." if len(text) > 50 else f"[Parser] Found subsection heading: {text}")
             continue
         
         # Regular content - add to current chunk
@@ -951,13 +951,13 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
 if __name__ == "__main__":
     import sys
     import pickle
+    from datetime import datetime
     # Step 1: Parse PDF and extract unique terms from content
     unique_terms_path = "data/processed/unique_terms.csv"
 
     if len(sys.argv) < 2:
         print("Usage: python pdf_parser.py <pdf_path> [output_pickle]")
         sys.exit(1)
-    from datetime import datetime
     pdf_path = sys.argv[1]
     if len(sys.argv) > 2:
         out_path = sys.argv[2]
@@ -971,7 +971,6 @@ if __name__ == "__main__":
     archive_json = os.path.join(archive_dir, f"chunks_{dt_str}.json")
     chunks = parse_pdf_rulebook(pdf_path)
     # Extract unique terms from all chunked text
-    import re
     import requests
     all_text = " ".join(chunk["text"] for chunk in chunks)
     # Find capitalized words (not just sentence-initial) and all-uppercase words (acronyms/terms)
