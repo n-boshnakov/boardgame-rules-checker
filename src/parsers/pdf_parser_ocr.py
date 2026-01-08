@@ -788,7 +788,7 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
     dt_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     corrections_csv_path = "data/processed/corrections_ocr.csv"
     corrections_archive_path = f"data/processed/archive/corrections_ocr_{dt_str}.csv"
-    unique_terms_path = "data/processed/unique_terms_ocr.csv"
+    unique_terms_path = "data/processed/unique_terms.csv"  # Always use shared unique_terms.csv
     word_fragments_path = "data/processed/word_fragments_ocr.csv"
     section_headers = set()
     
@@ -1012,12 +1012,17 @@ if __name__ == "__main__":
     filtered_words = [original for norm, original in normalized_words.items() if norm not in normalized_stopwords]
     
     # Write unique terms to CSV
-    unique_terms_path = "data/processed/unique_terms_ocr.csv"
+    # Only write if file doesn't exist to avoid overwriting
+    unique_terms_path = "data/processed/unique_terms.csv"
     os.makedirs(os.path.dirname(unique_terms_path), exist_ok=True)
-    for_write = [normalized_words[n] for n in sorted(normalized_words) if n in {normalize(w) for w in filtered_words}]
-    with open(unique_terms_path, "w", encoding="utf-8") as f:
-        for w in for_write:
-            f.write(w + "\n")
+    if not os.path.exists(unique_terms_path):
+        for_write = [normalized_words[n] for n in sorted(normalized_words) if n in {normalize(w) for w in filtered_words}]
+        with open(unique_terms_path, "w", encoding="utf-8") as f:
+            for w in for_write:
+                f.write(w + "\n")
+        print(f"Created unique terms file: {unique_terms_path}")
+    else:
+        print(f"Using existing unique terms file: {unique_terms_path}")
     
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     
@@ -1035,7 +1040,8 @@ if __name__ == "__main__":
     print(f"Saved {len(chunks)} chunks to {out_path}")
     print(f"Archived {len(chunks)} chunks to {archive_pkl} and {archive_json}")
     print(f"Extracted {len(chunks)} chunks.")
-    print(f"Extracted {len(words)} unique terms to {unique_terms_path}")
+    # Don't show this message since we may be using existing file
+    # print(f"Extracted {len(words)} unique terms to {unique_terms_path}")
     
     for c in chunks[:3]:
         print(c)

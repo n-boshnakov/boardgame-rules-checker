@@ -47,6 +47,7 @@ def correct_spelling(
         return {'corrected_text': text, 'checked_words': []}  # fallback: do nothing if not installed
     spell = SpellChecker(language=language)
     unique_terms = set()
+    unique_terms_lower = set()  # Case-insensitive lookup
     if unique_terms_file:
         try:
             with open(unique_terms_file, 'r', encoding='utf-8') as f:
@@ -57,6 +58,7 @@ def correct_spelling(
                     word = row[0].strip()
                     if word:
                         unique_terms.add(word)
+                        unique_terms_lower.add(word.lower())
         except Exception as e:
             print(f"Warning: Could not read unique_terms file: {e}")
     
@@ -80,7 +82,8 @@ def correct_spelling(
     def correct_word(word):
         if not word.isalpha():
             return word, word
-        if word in unique_terms:
+        # Check unique terms (case-insensitive) - NEVER correct these
+        if word.lower() in unique_terms_lower:
             return word, word
         # Check word fragments first (exact match)
         if word in word_fragments:
@@ -104,12 +107,13 @@ def correct_spelling(
         out_dir = os.path.dirname(out_path)
         if out_dir and not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)
-        # Append new corrections
+        # Append new corrections (but skip terms in unique_terms to avoid conflicts)
         try:
             with open(out_path, 'a', encoding='utf-8', newline='') as f:
                 writer = csv.writer(f)
                 for orig, corr in checked_words:
-                    if orig != corr:
+                    # Never write corrections for terms in unique_terms (case-insensitive check)
+                    if orig != corr and orig.lower() not in unique_terms_lower:
                         writer.writerow([orig, corr])
         except Exception as e:
             print(f"[SpellChecker] Warning: Could not append to corrections file: {e}")
@@ -119,6 +123,8 @@ def correct_spelling(
                 with open(out_path, 'r', encoding='utf-8') as f:
                     reader = csv.reader(f)
                     pairs = set(tuple(row) for row in reader if row and row[0] != 'original')
+                # Filter out any terms that are in unique_terms (safety check, case-insensitive)
+                pairs = {(orig, corr) for orig, corr in pairs if orig.lower() not in unique_terms_lower}
                 pairs = sorted(pairs, key=lambda x: (x[0].lower(), x[1].lower()))
                 with open(out_path, 'w', encoding='utf-8', newline='') as f:
                     writer = csv.writer(f)

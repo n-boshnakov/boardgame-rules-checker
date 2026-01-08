@@ -5,6 +5,8 @@ import json
 import os
 import logging
 from spellcheck_utils import correct_spelling
+import threading
+import time
 
 # Setup logging for skipped paragraphs
 SKIPPED_LOG_FILE = "skipped_paragraphs.log"
@@ -568,7 +570,7 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
     return chunks
 
 
-def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_chars: int = 1000, overlap_chars: int = 150) -> List[Dict]:
+def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_chars: int = 1000, overlap_chars: int = 150, use_ocr: bool = False, ocr_folder: str = "data/ocr_extracted", spellcheck_timeout: float = 3.0) -> List[Dict]:
     """
     Parses a PDF rulebook and returns a list of chunks with metadata.
     Skips irrelevant sections (credits, table of contents, ads, thanks, etc.).
@@ -580,11 +582,30 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
         doc_type: Type of document (default "rulebook")
         max_chunk_chars: Maximum characters per chunk (default 1000 for optimal context)
         overlap_chars: Characters to overlap between chunks (default 150 for better context)
+        use_ocr: If True, load pre-extracted OCR text from ocr_folder instead of PyMuPDF extraction (default False)
+        ocr_folder: Folder containing OCR-extracted text files (default "data/ocr_extracted")
+        spellcheck_timeout: Maximum seconds to spend spell checking each chunk (default 3.0, None = no timeout)
     
     Returns:
         List of chunk dictionaries with text, metadata, and context
     """
-    doc = fitz.open(pdf_path)
+    if use_ocr:
+        # OCR mode: load pre-extracted text files
+        pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
+        ocr_pdf_folder = os.path.join(ocr_folder, pdf_name)
+        
+        if not os.path.exists(ocr_pdf_folder):
+            raise FileNotFoundError(
+                f"OCR folder not found: {ocr_pdf_folder}\\n"
+                f"Please run pdf_parser_ocr.py first to extract OCR text."
+            )
+        
+        print(f"[Parser] Using OCR mode - loading from {ocr_pdf_folder}")
+        doc = None
+    else:
+        print(f"[Parser] Using PyMuPDF mode for text extraction")
+        doc = fitz.open(pdf_path)
+        ocr_pdf_folder = None
     chunks = []
     skip_patterns = [
         r"table of contents", r"^\s*thank you", r"special thanks", r"credits", r"designed by", r"illustrated by",
@@ -612,70 +633,142 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
 
     from datetime import datetime
     dt_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    corrections_csv_path = "data/processed/corrections.csv"
-    corrections_archive_path = f"data/processed/archive/corrections_{dt_str}.csv"
+    
+    # Use OCR-specific corrections file when in OCR mode, but always use shared unique_terms.csv
+    if use_ocr:
+        corrections_csv_path = "data/processed/corrections_ocr.csv"
+        corrections_archive_path = f"data/processed/archive/corrections_ocr_{dt_str}.csv"
+    else:
+        corrections_csv_path = "data/processed/corrections.csv"
+        corrections_archive_path = f"data/processed/archive/corrections_{dt_str}.csv"
+    
+    # Always use the same unique_terms.csv for both modes
     unique_terms_path = "data/processed/unique_terms.csv"
-    word_fragments_path = "data/processed/word_fragments.csv"
+    word_fragments_path = "data/processed/word_fragments.csv"  # Shared across both modes
     section_headers = set()
     
     # First pass: collect all paragraphs with their page numbers
     all_paragraphs = []
     
-    for page_num in range(len(doc)):
-        page = doc[page_num]
+    if use_ocr:
+        # OCR mode: load from text files
+        ocr_files = sorted([f for f in os.listdir(ocr_pdf_folder) if f.endswith('.txt')])
         
-        # Check if we're potentially in TOC section
-        if page_num < toc_page_limit:
-            in_toc_section = True
-        else:
-            in_toc_section = False
-        
-        # Use layout-aware text extraction with "dict" mode
-        # This preserves text blocks and their positioning
-        try:
-            # Extract with layout preservation
-            page_dict = page.get_text("dict")
-            text_blocks = []
+        for ocr_file in ocr_files:
+            # Extract page number from filename (e.g., page_001.txt -> 1)
+            page_num = int(ocr_file.split('_')[1].split('.')[0]) - 1
             
-            for block in page_dict.get("blocks", []):
-                if block.get("type") == 0:  # Text block
-                    block_lines = []
-                    for line in block.get("lines", []):
-                        line_text = ""
-                        for span in line.get("spans", []):
-                            line_text += span.get("text", "")
-                        if line_text.strip():
-                            block_lines.append(line_text.strip())
-                    
-                    if block_lines:
-                        # Join lines in a block with single newline
-                        block_text = "\n".join(block_lines)
-                        text_blocks.append(block_text)
+            # Check if we're potentially in TOC section
+            if page_num < toc_page_limit:
+                in_toc_section = True
+            else:
+                in_toc_section = False
             
-            # Join blocks with double newline to separate paragraphs
-            text = "\n\n".join(text_blocks)
+            # Load OCR text from file
+            with open(os.path.join(ocr_pdf_folder, ocr_file), 'r', encoding='utf-8') as f:
+                text = f.read()
             
-        except Exception as e:
-            # Fallback to simple text extraction if layout parsing fails
-            print(f"[Parser] Layout extraction failed on page {page_num + 1}, using simple method: {e}")
-            text = page.get_text("text")
-        
-        # Fix encoding issues BEFORE any other processing
-        text = fix_encoding_issues(text)
-        
-        lines = text.splitlines()
-        # Remove likely headers/footers (first and last line)
-        if len(lines) > 4:
-            lines = lines[1:-1]
-        text = "\n".join(lines)
+            # Fix encoding issues BEFORE any other processing
+            text = fix_encoding_issues(text)
+            
+            lines = text.splitlines()
+            # Remove likely headers/footers (first and last line)
+            if len(lines) > 4:
+                lines = lines[1:-1]
+            text = "\n".join(lines)
 
-        # Split by double newlines to get paragraphs
-        for para in text.split("\n\n"):
-            clean_para = para.strip()
+            # Split by double newlines to get paragraphs
+            for para in text.split("\n\n"):
+                clean_para = para.strip()
+                
+                # Skip very short paragraphs (but not too aggressively)
+                if len(clean_para) < 20:
+                    continue
+                
+                # Skip sections matching skip patterns
+                if skip_regex.search(clean_para):
+                    skipped_logger.info(f"[SKIPPED - Pattern Match] Page {page_num + 1}: {clean_para}")
+                    continue
+                
+                # Enhanced TOC detection: skip paragraphs with dotted lines and page numbers
+                if in_toc_section and (re.search(r'\.\s*\.\s*\.', clean_para) or re.search(r'\s*\d+\s*$', clean_para)):
+                    skipped_logger.info(f"[SKIPPED - TOC Entry] Page {page_num + 1}: {clean_para}")
+                    continue
+                
+                # Skip page numbers
+                if re.fullmatch(r"\d{1,3}", clean_para):
+                    continue
+
+                # Don't skip section headers anymore - we need them for section-based chunking
+                # Just collect them for later reference
+                first_line = clean_para.split("\n")[0].strip()
+                if (len(first_line) <= 40 and (first_line.isupper() or sum(1 for c in first_line if c.isupper()) > 3)):
+                    section_headers.add(first_line)
+                
+                # Detect and format tables
+                clean_para = detect_and_format_table(clean_para)
+                
+                all_paragraphs.append({
+                    'text': clean_para,
+                    'page': page_num + 1
+                })
+    else:
+        # PyMuPDF mode: extract from PDF pages
+        for page_num in range(len(doc)):
+            page = doc[page_num]
             
-            # Skip very short paragraphs (but not too aggressively)
-            if len(clean_para) < 20:
-                continue
+            # Check if we're potentially in TOC section
+            if page_num < toc_page_limit:
+                in_toc_section = True
+            else:
+                in_toc_section = False
+            
+            # Use layout-aware text extraction with "dict" mode
+            # This preserves text blocks and their positioning
+            try:
+                # Extract with layout preservation
+                page_dict = page.get_text("dict")
+                text_blocks = []
+                
+                for block in page_dict.get("blocks", []):
+                    if block.get("type") == 0:  # Text block
+                        block_lines = []
+                        for line in block.get("lines", []):
+                            line_text = ""
+                            for span in line.get("spans", []):
+                                line_text += span.get("text", "")
+                            if line_text.strip():
+                                block_lines.append(line_text.strip())
+                        
+                        if block_lines:
+                            # Join lines in a block with single newline
+                            block_text = "\n".join(block_lines)
+                            text_blocks.append(block_text)
+                
+                # Join blocks with double newline to separate paragraphs
+                text = "\n\n".join(text_blocks)
+                
+            except Exception as e:
+                # Fallback to simple text extraction if layout parsing fails
+                print(f"[Parser] Layout extraction failed on page {page_num + 1}, using simple method: {e}")
+                text = page.get_text("text")
+            
+            # Fix encoding issues BEFORE any other processing
+            text = fix_encoding_issues(text)
+            
+            lines = text.splitlines()
+            # Remove likely headers/footers (first and last line)
+            if len(lines) > 4:
+                lines = lines[1:-1]
+            text = "\n".join(lines)
+
+            # Split by double newlines to get paragraphs
+            for para in text.split("\n\n"):
+                clean_para = para.strip()
+                
+                # Skip very short paragraphs (but not too aggressively)
+                if len(clean_para) < 20:
+                    continue
             
             # Skip sections matching skip patterns
             if skip_regex.search(clean_para):
@@ -705,7 +798,7 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
                 'page': page_num + 1
             })
     
-    print(f"[Parser] Extracted {len(all_paragraphs)} paragraphs from {len(doc)} pages")
+    print(f"[Parser] Extracted {len(all_paragraphs)} paragraphs from {len(doc) if doc else len(ocr_files)} pages")
 
     # Apply new section-based chunking logic
     section_chunks = chunk_by_sections(all_paragraphs)
@@ -717,15 +810,47 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
         section = chunk_info.get('section', 'Unknown')
         subsection = chunk_info.get('subsection')
         
-        # Spellcheck the chunk
-        spell_result = correct_spelling(
-            chunk_text,
-            generate_corrections_file=True,
-            corrections_output_path=corrections_csv_path,
-            unique_terms_file=unique_terms_path,
-            word_fragments_file=word_fragments_path
-        )
-        print(f"[Parser] Spellchecked chunk {idx+1}/{len(section_chunks)} (page {page_num}, section: {section}): {chunk_text[:40]}...")
+        # Spellcheck the chunk with timeout
+        if spellcheck_timeout is not None and spellcheck_timeout > 0:
+            # Use threading to implement timeout
+            result_container = {'result': None, 'completed': False}
+            
+            def spellcheck_worker():
+                try:
+                    result_container['result'] = correct_spelling(
+                        chunk_text,
+                        generate_corrections_file=True,
+                        corrections_output_path=corrections_csv_path,
+                        unique_terms_file=unique_terms_path,
+                        word_fragments_file=word_fragments_path
+                    )
+                    result_container['completed'] = True
+                except Exception as e:
+                    print(f"[Parser] Spellcheck error on chunk {idx+1}: {e}")
+                    result_container['result'] = chunk_text
+                    result_container['completed'] = True
+            
+            thread = threading.Thread(target=spellcheck_worker, daemon=True)
+            thread.start()
+            thread.join(timeout=spellcheck_timeout)
+            
+            if result_container['completed']:
+                spell_result = result_container['result']
+                print(f"[Parser] Spellchecked chunk {idx+1}/{len(section_chunks)} (page {page_num}, section: {section}): {chunk_text[:40]}...")
+            else:
+                # Timeout occurred
+                print(f"[Parser] Spellcheck TIMEOUT on chunk {idx+1}/{len(section_chunks)} (page {page_num}, section: {section}) - skipping after {spellcheck_timeout}s")
+                spell_result = chunk_text  # Use original text
+        else:
+            # No timeout - run normally
+            spell_result = correct_spelling(
+                chunk_text,
+                generate_corrections_file=True,
+                corrections_output_path=corrections_csv_path,
+                unique_terms_file=unique_terms_path,
+                word_fragments_file=word_fragments_path
+            )
+            print(f"[Parser] Spellchecked chunk {idx+1}/{len(section_chunks)} (page {page_num}, section: {section}): {chunk_text[:40]}...")
         corrected_text = spell_result['corrected_text'] if isinstance(spell_result, dict) else spell_result
 
         # Create final chunk entry
@@ -736,14 +861,14 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
             "subsection": subsection,
             "doc_type": doc_type,
             "chunk_index": idx,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "extraction_method": "OCR" if use_ocr else "PyMuPDF"
         }
         chunks.append(chunk)
     
     print(f"[Parser] Created {len(chunks)} total chunks from {len(section_chunks)} section-based chunks")
     
     # Save section headers for answer filtering
-    import os
     section_headers_path = "data/processed/section_headers.txt"
     os.makedirs(os.path.dirname(section_headers_path), exist_ok=True)
     with open(section_headers_path, "w", encoding="utf-8") as shf:
@@ -779,7 +904,6 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
 
 if __name__ == "__main__":
     import sys
-    import os
     import pickle
     # Step 1: Parse PDF and extract unique terms from content
     unique_terms_path = "data/processed/unique_terms.csv"
@@ -848,11 +972,16 @@ if __name__ == "__main__":
     normalized_words = {normalize(w): w for w in words}
     filtered_words = [original for norm, original in normalized_words.items() if norm not in normalized_stopwords]
     # Write unique terms to CSV (original form, sorted by normalized)
+    # Only write if file doesn't exist to avoid overwriting
     os.makedirs(os.path.dirname(unique_terms_path), exist_ok=True)
-    for_write = [normalized_words[n] for n in sorted(normalized_words) if n in {normalize(w) for w in filtered_words}]
-    with open(unique_terms_path, "w", encoding="utf-8") as f:
-        for w in for_write:
-            f.write(w + "\n")
+    if not os.path.exists(unique_terms_path):
+        for_write = [normalized_words[n] for n in sorted(normalized_words) if n in {normalize(w) for w in filtered_words}]
+        with open(unique_terms_path, "w", encoding="utf-8") as f:
+            for w in for_write:
+                f.write(w + "\n")
+        print(f"Created unique terms file: {unique_terms_path}")
+    else:
+        print(f"Using existing unique terms file: {unique_terms_path}")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     # Save main chunk file (no date-time)
     with open(out_path, "wb") as f:
@@ -865,6 +994,7 @@ if __name__ == "__main__":
     print(f"Saved {len(chunks)} chunks to {out_path}")
     print(f"Archived {len(chunks)} chunks to {archive_pkl} and {archive_json}")
     print(f"Extracted {len(chunks)} chunks.")
-    print(f"Extracted {len(words)} unique terms to {unique_terms_path}")
+    # Don't show this message since we may be using existing file
+    # print(f"Extracted {len(words)} unique terms to {unique_terms_path}")
     for c in chunks[:3]:
         print(c)
