@@ -63,10 +63,13 @@ class RulebookRetriever:
             script_query["script_score"]["query"]["bool"]["filter"] = [{"term": {"section": section}}]
         return self.es.search(index=ES_INDEX, body={"size": size, "query": script_query})
 
-    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85) -> List[Dict]:
+    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85, use_semantic: bool = None) -> List[Dict]:
         # Apply minimal semantic enhancement (max 1 term to avoid query drift)
+        # Allow per-request override of semantic analysis setting
+        should_use_semantic = use_semantic if use_semantic is not None else self.use_semantic_analysis
+        
         enhanced_query = query
-        if self.use_semantic_analysis and self.semantic_analyzer:
+        if should_use_semantic and self.semantic_analyzer:
             try:
                 enhanced_query = self.semantic_analyzer.enhance_query(query, max_additions=1)
             except Exception:
