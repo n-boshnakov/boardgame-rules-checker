@@ -15,6 +15,7 @@ if SRC_PATH not in sys.path:
     sys.path.insert(0, SRC_PATH)
 
 from search.retriever import RulebookRetriever
+from qa.multi_dimensional_scorer import MultiDimensionalScorer
 
 CSV_PATH = os.path.join(PROJECT_ROOT, "data/processed/qa_results.csv")
 ARCHIVE_DIR = os.path.join(PROJECT_ROOT, "data/processed/archive")
@@ -41,8 +42,17 @@ def main(args):
     """
     start_time = time.time()
 
+    # Determine semantic analysis setting
+    use_semantic = not args.no_semantic_analysis if hasattr(args, 'no_semantic_analysis') else args.use_semantic_analysis
+
     # Initialize retriever with reranking enabled (CrossEncoder)
-    retriever = RulebookRetriever(use_reranker=True)
+    retriever = RulebookRetriever(
+        use_reranker=True,
+        use_semantic_analysis=use_semantic
+    )
+    
+    # Initialize multi-dimensional scorer (it will load its own CrossEncoder)
+    scorer = MultiDimensionalScorer()
 
     # Load questions from clean CSV
     questions_df = pd.read_csv(CSV_PATH)
@@ -85,15 +95,21 @@ def main(args):
         # Generate answer from retrieved chunks
         predicted_answer = retriever.generate_answer(question, retrieved_chunks)
         
-        # Calculate similarity between predicted answer and ground truth
-        try:
-            from rapidfuzz import fuzz
-            similarity_score = fuzz.token_set_ratio(
-                str(predicted_answer), 
-                str(ground_truth)
-            ) / 100.0  # Normalize to 0-1 range
-        except Exception:
-            similarity_score = 0.0
+        # Convert ground_truth to string, handle NaN/None
+        gt_string = str(ground_truth) if ground_truth and str(ground_truth) != 'nan' else None
+        
+        # Use multi-dimensional scoring instead of simple text similarity
+        score_result = scorer.score_answer(question, predicted_answer, gt_string)
+        
+        # Extract individual scores
+        overall_score = score_result['overall']
+        relevance_score = score_result['relevance']
+        completeness_score = score_result['completeness']
+        accuracy_score = score_result['accuracy']
+        conciseness_score = score_result['conciseness']
+        
+        # Detect question type for analysis
+        question_type = scorer._detect_question_type(question.lower())
         
         # Extract metadata from top-ranked chunk for reference
         top_chunk = retrieved_chunks[0] if retrieved_chunks else {}
@@ -105,7 +121,12 @@ def main(args):
             question, 
             ground_truth, 
             predicted_answer, 
-            similarity_score,
+            overall_score,
+            relevance_score,
+            completeness_score,
+            accuracy_score,
+            conciseness_score,
+            question_type,
             chunk_page, 
             chunk_section, 
             chunk_index, 
@@ -119,7 +140,12 @@ def main(args):
             'question', 
             'ground_truth', 
             'predicted', 
-            'score', 
+            'overall_score',
+            'relevance_score',
+            'completeness_score', 
+            'accuracy_score',
+            'conciseness_score',
+            'question_type',
             'page', 
             'section', 
             'chunk_index', 
@@ -129,8 +155,12 @@ def main(args):
 
     # Calculate performance metrics
     elapsed_time = int(time.time() - start_time)
-    mean_score = results_df['score'].mean()
-    passing_count = (results_df['score'] >= 0.8).sum()
+    mean_overall_score = results_df['overall_score'].mean()
+    mean_relevance = results_df['relevance_score'].mean()
+    mean_completeness = results_df['completeness_score'].mean()
+    mean_accuracy = results_df['accuracy_score'].mean()
+    mean_conciseness = results_df['conciseness_score'].mean()
+    passing_count = (results_df['overall_score'] >= 0.8).sum()
     
     # Generate timestamped filename for archive
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -146,10 +176,18 @@ def main(args):
     
     # Print summary
     print(f"\n{'='*70}")
-    print(f"QA Batch Evaluation Complete")
+    print(f"QA Batch Evaluation Complete - Multi-Dimensional Scoring")
+    if not use_semantic:
+        print(f"(Semantic Analysis: DISABLED)")
+    else:
+        print(f"(Semantic Analysis: ENABLED)")
     print(f"{'='*70}")
     print(f"Questions processed: {len(results_df)}")
-    print(f"Mean score: {mean_score:.2%}")
+    print(f"Mean overall score: {mean_overall_score:.2%}")
+    print(f"  - Relevance (35%):     {mean_relevance:.2%}")
+    print(f"  - Completeness (30%):  {mean_completeness:.2%}")
+    print(f"  - Accuracy (25%):      {mean_accuracy:.2%}")
+    print(f"  - Conciseness (10%):   {mean_conciseness:.2%}")
     print(f"Passing (≥0.8): {passing_count}/{len(results_df)} ({passing_count/len(results_df):.1%})")
     print(f"Processing time: {elapsed_time}s")
     print(f"\nResults saved to:")
@@ -196,6 +234,16 @@ Examples:
         "--semantic_selection", 
         action="store_true", 
         help="Use semantic sentence selection for answer generation (experimental)"
+    )
+    parser.add_argument(
+        "--use_semantic_analysis",
+        action="store_true",
+        help="Enable semantic query analysis (NLTK-based question understanding) - Optional NLP enhancement"
+    )
+    parser.add_argument(
+        "--no_semantic_analysis",
+        action="store_true",
+        help="Disable semantic query analysis (default: baseline hybrid search mode)"
     )
     
     args = parser.parse_args()

@@ -111,30 +111,6 @@ def fix_encoding_issues(text: str, config_path: str = "data/processed/pdf_ocr_co
     return text
 
 
-def detect_and_format_table(text: str) -> str:
-    """
-    Detect table-like structures and format them more clearly.
-    Tables often have multiple columns with bullet points or similar structure.
-    """
-    lines = text.split('\n')
-    
-    # Check if this looks like a table (multiple bullet points on consecutive lines)
-    bullet_lines = [i for i, line in enumerate(lines) if line.strip().startswith('•')]
-    
-    if len(bullet_lines) >= 3:
-        # This might be a table - try to add clearer separators
-        formatted_lines = []
-        for i, line in enumerate(lines):
-            formatted_lines.append(line)
-            # Add separator after bullet point groups
-            if i in bullet_lines and (i + 1 >= len(lines) or not lines[i + 1].strip().startswith('•')):
-                formatted_lines.append('')  # Add blank line for separation
-        
-        return '\n'.join(formatted_lines)
-    
-    return text
-
-
 def extract_section_from_content(text: str, prev_section: Optional[str] = None) -> Optional[str]:
     """
     Extracts section name from paragraph content using semantic patterns.
@@ -314,9 +290,10 @@ def is_all_caps_section(text: str) -> bool:
     
     # Filter out card names and game component descriptions
     card_keywords = [
-        'GRENADE', 'BLAST', 'CHEMICAL', 'MEDICINE', 'ARTIFACT', 'CONTAINER',
-        'WEAPON', 'SHOTGUN', 'RIFLE', 'PISTOL', 'HUMAN', 'MUTANT', 'PSIONIC',
-        'GRAVITATIONAL', 'IMPROVED', 'ADVANCED', 'BANDIT', 'CONTROLLER'
+        'GRAVITATIONAL', 'IMPROVED', 'ADVANCED', 'BANDIT', 'CONTROLLER',
+        'LIGHT WOUND', 'HEAVY WOUND', 'TOHIT', 'TORSO', 'HEAD', 'DAMAGE',
+        'SINGLE SHOT', 'SINGLE BARREL', 'QUICK SHOT', 'DETECT', 'THROW', 'RANGE',
+        'STARING', 'ORIES'  # Common OCR errors in non-heading contexts
     ]
     
     text_upper = text.upper()
@@ -745,9 +722,6 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
                 if (len(first_line) <= 40 and (first_line.isupper() or sum(1 for c in first_line if c.isupper()) > 3)):
                     section_headers.add(first_line)
                 
-                # Detect and format tables
-                clean_para = detect_and_format_table(clean_para)
-                
                 all_paragraphs.append({
                     'text': clean_para,
                     'page': page_num + 1
@@ -829,9 +803,6 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
                 first_line = clean_para.split("\n")[0].strip()
                 if (len(first_line) <= 40 and (first_line.isupper() or sum(1 for c in first_line if c.isupper()) > 3)):
                     section_headers.add(first_line)
-                
-                # Detect and format tables
-                clean_para = detect_and_format_table(clean_para)
                 
                 all_paragraphs.append({
                     'text': clean_para,
@@ -951,25 +922,37 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
 if __name__ == "__main__":
     import sys
     import pickle
+    import argparse
     from datetime import datetime
+    
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Parse PDF rulebook and extract chunks')
+    parser.add_argument('pdf_path', help='Path to the PDF file')
+    parser.add_argument('--output', '-o', default=None, help='Output pickle file path (default: data/processed/chunks.pkl or chunks_ocr.pkl)')
+    parser.add_argument('--use_ocr', action='store_true', help='Use pre-extracted OCR text from data/ocr_extracted/')
+    parser.add_argument('--ocr_folder', default='data/ocr_extracted', help='Folder containing OCR text files (default: data/ocr_extracted)')
+    
+    args = parser.parse_args()
+    
     # Step 1: Parse PDF and extract unique terms from content
     unique_terms_path = "data/processed/unique_terms.csv"
-
-    if len(sys.argv) < 2:
-        print("Usage: python pdf_parser.py <pdf_path> [output_pickle]")
-        sys.exit(1)
-    pdf_path = sys.argv[1]
-    if len(sys.argv) > 2:
-        out_path = sys.argv[2]
+    
+    pdf_path = args.pdf_path
+    
+    # Set default output path
+    if args.output:
+        out_path = args.output
     else:
         out_path = os.path.join("data", "processed", "chunks.pkl")
+    
     # Always create archive copy with date-time
     dt_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     archive_dir = os.path.join("data", "processed", "archive")
     os.makedirs(archive_dir, exist_ok=True)
     archive_pkl = os.path.join(archive_dir, f"chunks_{dt_str}.pkl")
     archive_json = os.path.join(archive_dir, f"chunks_{dt_str}.json")
-    chunks = parse_pdf_rulebook(pdf_path)
+    
+    chunks = parse_pdf_rulebook(pdf_path, use_ocr=args.use_ocr, ocr_folder=args.ocr_folder)
     # Extract unique terms from all chunked text
     import requests
     all_text = " ".join(chunk["text"] for chunk in chunks)
