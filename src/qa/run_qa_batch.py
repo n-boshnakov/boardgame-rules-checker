@@ -42,8 +42,8 @@ def main(args):
     """
     start_time = time.time()
 
-    # Determine semantic analysis setting
-    use_semantic = not args.no_semantic_analysis if hasattr(args, 'no_semantic_analysis') else args.use_semantic_analysis
+    # Use hybrid search by default; enable semantic analysis only when flag is provided
+    use_semantic = args.use_semantic_analysis
 
     # Initialize retriever with reranking enabled (CrossEncoder)
     retriever = RulebookRetriever(
@@ -70,7 +70,8 @@ def main(args):
             question, 
             top_k=25, 
             search_type="hybrid", 
-            hybrid_weight=0.85
+            hybrid_weight=0.85,
+            use_semantic=use_semantic
         )
         
         if not retrieved_chunks:
@@ -93,7 +94,7 @@ def main(args):
             pass  # Silently continue if diagnostic fails
 
         # Generate answer from retrieved chunks
-        predicted_answer = retriever.generate_answer(question, retrieved_chunks)
+        predicted_answer = retriever.generate_answer(question, retrieved_chunks, use_semantic=use_semantic)
         
         # Convert ground_truth to string, handle NaN/None
         gt_string = str(ground_truth) if ground_truth and str(ground_truth) != 'nan' else None
@@ -177,10 +178,11 @@ def main(args):
     # Print summary
     print(f"\n{'='*70}")
     print(f"QA Batch Evaluation Complete - Multi-Dimensional Scoring")
-    if not use_semantic:
-        print(f"(Semantic Analysis: DISABLED)")
+    print(f"Search Mode: Hybrid (85% semantic + 15% BM25)")
+    if use_semantic:
+        print(f"Semantic Analysis: ENABLED")
     else:
-        print(f"(Semantic Analysis: ENABLED)")
+        print(f"Semantic Analysis: DISABLED (default)")
     print(f"{'='*70}")
     print(f"Questions processed: {len(results_df)}")
     print(f"Mean overall score: {mean_overall_score:.2%}")
@@ -239,11 +241,6 @@ Examples:
         "--use_semantic_analysis",
         action="store_true",
         help="Enable semantic query analysis (NLTK-based question understanding) - Optional NLP enhancement"
-    )
-    parser.add_argument(
-        "--no_semantic_analysis",
-        action="store_true",
-        help="Disable semantic query analysis (default: baseline hybrid search mode)"
     )
     
     args = parser.parse_args()

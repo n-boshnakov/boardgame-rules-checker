@@ -546,29 +546,34 @@ class RulebookRetriever:
 
 if __name__ == "__main__":
     import sys
+    import argparse
     
-    if len(sys.argv) < 2:
-        print("Usage: python retriever.py <question>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Search rulebook and answer questions")
+    parser.add_argument("question", nargs="+", help="Question to ask")
+    parser.add_argument("--use_semantic_analysis", action="store_true", 
+                        help="Enable semantic query analysis (NLTK-based)")
+    args = parser.parse_args()
     
-    question = " ".join(sys.argv[1:])
+    question = " ".join(args.question)
+    use_semantic = args.use_semantic_analysis
     
-    # Initialize retriever (default: hybrid search without semantic analysis)
-    retriever = RulebookRetriever(use_reranker=True, use_semantic_analysis=False)
+    # Initialize retriever
+    retriever = RulebookRetriever(use_reranker=True, use_semantic_analysis=use_semantic)
     
     # Search for relevant chunks
     print(f"\n{'='*70}")
     print(f"Question: {question}")
+    print(f"Semantic Analysis: {'ENABLED' if use_semantic else 'DISABLED'}")
     print(f"{'='*70}\n")
     
-    chunks = retriever.search(question, top_k=25, search_type="hybrid", hybrid_weight=0.85)
+    chunks = retriever.search(question, top_k=25, search_type="hybrid", hybrid_weight=0.85, use_semantic=use_semantic)
     
     if not chunks:
         print("No relevant chunks found.")
         sys.exit(0)
     
     # Generate answer
-    answer = retriever.generate_answer(question, chunks)
+    answer = retriever.generate_answer(question, chunks, use_semantic=use_semantic)
     
     print(f"Answer:\n{answer}")
     print(f"\n{'='*70}\n")
