@@ -113,16 +113,19 @@ def fix_encoding_issues(text: str, config_path: str = "data/processed/pdf_ocr_co
     for pattern_config in config.get("word_patterns", []):
         pattern = pattern_config.get("pattern")
         pattern_type = pattern_config.get("type", "simple")
+        replacement = pattern_config.get("replacement", "")
         
         if pattern_type == "prefix_replace":
             # Handle prefix replacement (e.g., ]talker -> Stalker)
             prefix = pattern_config.get("prefix")
             prefix_replacement = pattern_config.get("prefix_replacement")
             text = re.sub(pattern, lambda m: m.group(0).replace(prefix, prefix_replacement), text)
-        elif pattern_type == "simple":
-            # Simple string replacement
-            replacement = pattern_config.get("replacement", "")
+        elif pattern_type == "regex":
+            # Regex pattern replacement
             text = re.sub(pattern, replacement, text)
+        elif pattern_type == "simple":
+            # Simple string replacement (literal, not regex)
+            text = text.replace(pattern, replacement)
     
     return text
 

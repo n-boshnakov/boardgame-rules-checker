@@ -7,6 +7,20 @@ import logging
 from spellcheck_utils import correct_spelling
 import threading
 import time
+from datetime import datetime
+import pickle
+
+# OCR Libraries (optional)
+try:
+    import pytesseract
+    from pdf2image import convert_from_path
+    from pdf2image.exceptions import PDFInfoNotInstalledError
+    from pytesseract import TesseractNotFoundError
+    HAS_OCR = True
+except ImportError:
+    HAS_OCR = False
+    PDFInfoNotInstalledError = Exception  # Fallback for type hints
+    TesseractNotFoundError = Exception  # Fallback for type hints
 
 # Setup logging for skipped paragraphs
 SKIPPED_LOG_FILE = "skipped_paragraphs.log"
@@ -97,18 +111,159 @@ def fix_encoding_issues(text: str, config_path: str = "data/processed/pdf_ocr_co
     for pattern_config in config.get("word_patterns", []):
         pattern = pattern_config.get("pattern")
         pattern_type = pattern_config.get("type", "simple")
+        replacement = pattern_config.get("replacement", "")
         
         if pattern_type == "prefix_replace":
             # Handle prefix replacement (e.g., ]talker -> Stalker)
             prefix = pattern_config.get("prefix")
             prefix_replacement = pattern_config.get("prefix_replacement")
             text = re.sub(pattern, lambda m: m.group(0).replace(prefix, prefix_replacement), text)
-        elif pattern_type == "simple":
-            # Simple string replacement
-            replacement = pattern_config.get("replacement", "")
+        elif pattern_type == "regex":
+            # Regex pattern replacement
             text = re.sub(pattern, replacement, text)
+        elif pattern_type == "simple":
+            # Simple string replacement (literal, not regex)
+            text = text.replace(pattern, replacement)
     
     return text
+
+
+def extract_text_with_ocr(pdf_path: str, output_folder: str = "data/ocr_extracted", poppler_path: Optional[str] = None, tesseract_cmd: Optional[str] = None) -> List[Dict]:
+    """
+    Extract text from PDF using OCR (Tesseract).
+    Saves each page's OCR text to a separate file in the output folder.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        output_folder: Folder to save OCR-extracted text files
+        poppler_path: Optional path to poppler binaries (Windows only)
+        tesseract_cmd: Optional path to tesseract executable (e.g., r'C:\\Program Files\\Tesseract-OCR\\tesseract.exe')
+    
+    Returns:
+        List of dictionaries with page number and extracted text
+    """
+    if not HAS_OCR:
+        raise ImportError(
+            "OCR libraries not available.\n"
+            "Install with: pip install pytesseract pdf2image pillow\n"
+            "Also install Tesseract-OCR: https://github.com/tesseract-ocr/tesseract\n"
+            "Also install Poppler: https://github.com/oschwartz10612/poppler-windows/releases/"
+        )
+    
+    # Set tesseract command path if provided
+    if tesseract_cmd:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+    
+    # Validate poppler path if provided
+    if poppler_path:
+        if not os.path.exists(poppler_path):
+            print(f"\n[Parser] WARNING: Provided poppler_path does not exist: {poppler_path}")
+            print(f"[Parser] Please check the path and try again.")
+            print(f"[Parser] Common locations:")
+            print(f"  - C:\\poppler\\Library\\bin")
+            print(f"  - C:\\Program Files\\poppler\\Library\\bin")
+            raise FileNotFoundError(f"Poppler path not found: {poppler_path}")
+        else:
+            print(f"[Parser] Using poppler from: {poppler_path}")
+    
+    # Create output folder structure
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Get the PDF filename without extension for the subfolder
+    pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    pdf_output_folder = os.path.join(output_folder, pdf_name)
+    os.makedirs(pdf_output_folder, exist_ok=True)
+    
+    print(f"[Parser] Converting PDF to images and extracting text with OCR...")
+    print(f"[Parser] Output folder: {pdf_output_folder}")
+    
+    # Open PDF to get page count
+    doc = fitz.open(pdf_path)
+    num_pages = len(doc)
+    doc.close()
+    
+    # Convert PDF pages to images
+    print(f"[Parser] Processing {num_pages} pages...")
+    
+    ocr_results = []
+    
+    # Process each page
+    for page_num in range(num_pages):
+        print(f"[Parser] Processing page {page_num + 1}/{num_pages}...")
+        
+        try:
+            # Convert single page to image using pdf2image
+            convert_kwargs = {
+                'pdf_path': pdf_path,
+                'first_page': page_num + 1,
+                'last_page': page_num + 1,
+                'dpi': 300  # Higher DPI for better OCR quality
+            }
+            
+            if poppler_path:
+                convert_kwargs['poppler_path'] = poppler_path
+            
+            images = convert_from_path(**convert_kwargs)
+        except PDFInfoNotInstalledError:
+            print("\n" + "="*70)
+            print("ERROR: Poppler is not installed or not in PATH!")
+            print("="*70)
+            print("\nFor Windows users:")
+            print("1. Download poppler from: https://github.com/oschwartz10612/poppler-windows/releases/")
+            print("2. Extract the zip file (e.g., to C:\\poppler)")
+            print("3. Either:")
+            print("   a) Add C:\\poppler\\Library\\bin to your system PATH, OR")
+            print("   b) Pass poppler_path parameter: extract_text_with_ocr(pdf_path, poppler_path=r'C:\\poppler\\Library\\bin')")
+            print("\nFor Linux users:")
+            print("   sudo apt-get install poppler-utils")
+            print("\nFor Mac users:")
+            print("   brew install poppler")
+            print("="*70 + "\n")
+            raise
+        
+        if not images:
+            print(f"[Parser] Warning: Could not convert page {page_num + 1} to image")
+            continue
+        
+        # Extract text using Tesseract OCR
+        page_image = images[0]
+        
+        try:
+            ocr_text = pytesseract.image_to_string(page_image, lang='eng')
+        except TesseractNotFoundError:
+            print("\n" + "="*70)
+            print("ERROR: Tesseract OCR is not installed or not in PATH!")
+            print("="*70)
+            print("\nFor Windows users:")
+            print("1. Download Tesseract installer from:")
+            print("   https://github.com/UB-Mannheim/tesseract/wiki")
+            print("2. Install it (default location: C:\\Program Files\\Tesseract-OCR)")
+            print("3. Either:")
+            print("   a) Add C:\\Program Files\\Tesseract-OCR to your system PATH, OR")
+            print("   b) Pass tesseract_cmd parameter when calling the function")
+            print("\nFor Linux users:")
+            print("   sudo apt-get install tesseract-ocr")
+            print("\nFor Mac users:")
+            print("   brew install tesseract")
+            print("="*70 + "\n")
+            raise
+        
+        # Save OCR text to file
+        page_text_file = os.path.join(pdf_output_folder, f"page_{page_num + 1:03d}.txt")
+        with open(page_text_file, 'w', encoding='utf-8') as f:
+            f.write(ocr_text)
+        
+        print(f"[Parser] Saved OCR text to {page_text_file}")
+        
+        ocr_results.append({
+            'page': page_num + 1,
+            'text': ocr_text,
+            'file': page_text_file
+        })
+    
+    print(f"[Parser] OCR extraction complete. Extracted text from {len(ocr_results)} pages.")
+    
+    return ocr_results
 
 
 def extract_section_from_content(text: str, prev_section: Optional[str] = None) -> Optional[str]:
@@ -587,7 +742,7 @@ def chunk_by_sections(paragraphs: List[Dict]) -> List[Dict]:
     return chunks
 
 
-def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_chars: int = 1000, overlap_chars: int = 150, use_ocr: bool = False, ocr_folder: str = "data/ocr_extracted", spellcheck_timeout: float = 3.0) -> List[Dict]:
+def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_chars: int = 1000, overlap_chars: int = 150, use_ocr: bool = False, ocr_folder: str = "data/ocr_extracted", spellcheck_timeout: float = None, extract_ocr: bool = False, poppler_path: Optional[str] = None, tesseract_cmd: Optional[str] = None) -> List[Dict]:
     """
     Parses a PDF rulebook and returns a list of chunks with metadata.
     Skips irrelevant sections (credits, table of contents, ads, thanks, etc.).
@@ -601,11 +756,22 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
         overlap_chars: Characters to overlap between chunks (default 150 for better context)
         use_ocr: If True, load pre-extracted OCR text from ocr_folder instead of PyMuPDF extraction (default False)
         ocr_folder: Folder containing OCR-extracted text files (default "data/ocr_extracted")
-        spellcheck_timeout: Maximum seconds to spend spell checking each chunk (default 3.0, None = no timeout)
+        spellcheck_timeout: Maximum seconds to spend spell checking each chunk (default None = no timeout, unlimited time)
+        extract_ocr: If True, extract OCR text from PDF first (requires pytesseract, pdf2image, poppler)
+        poppler_path: Optional path to poppler binaries for OCR extraction (Windows only)
+        tesseract_cmd: Optional path to tesseract executable for OCR extraction
     
     Returns:
         List of chunk dictionaries with text, metadata, and context
     """
+    # Step 0: Extract OCR text if requested
+    if extract_ocr:
+        print(f"[Parser] Extracting OCR text from PDF...")
+        extract_text_with_ocr(pdf_path, output_folder=ocr_folder, poppler_path=poppler_path, tesseract_cmd=tesseract_cmd)
+        print(f"[Parser] OCR extraction complete. Now processing chunks...")
+        # After extraction, use OCR mode
+        use_ocr = True
+    
     if use_ocr:
         # OCR mode: load pre-extracted text files
         pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
@@ -821,7 +987,9 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
         section = chunk_info.get('section', 'Unknown')
         subsection = chunk_info.get('subsection')
         
-        # Spellcheck the chunk with timeout
+        # Spellcheck the chunk with optional timeout (default: no timeout)
+        # Note: OCR corrections from fix_encoding_issues() are already applied to raw text before chunking
+        # This spellcheck step handles additional corrections using pyspellchecker
         if spellcheck_timeout is not None and spellcheck_timeout > 0:
             # Use threading to implement timeout
             result_container = {'result': None, 'completed': False}
@@ -853,7 +1021,7 @@ def parse_pdf_rulebook(pdf_path: str, doc_type: str = "rulebook", max_chunk_char
                 print(f"[Parser] Spellcheck TIMEOUT on chunk {idx+1}/{len(section_chunks)} (page {page_num}, section: {section}) - skipping after {spellcheck_timeout}s")
                 spell_result = chunk_text  # Use original text
         else:
-            # No timeout - run normally
+            # No timeout - run spellcheck with unlimited time (default behavior)
             spell_result = correct_spelling(
                 chunk_text,
                 generate_corrections_file=True,
@@ -928,9 +1096,12 @@ if __name__ == "__main__":
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Parse PDF rulebook and extract chunks')
     parser.add_argument('pdf_path', help='Path to the PDF file')
-    parser.add_argument('--output', '-o', default=None, help='Output pickle file path (default: data/processed/chunks.pkl or chunks_ocr.pkl)')
+    parser.add_argument('--output', '-o', default=None, help='Output pickle file path (default: data/processed/chunks.pkl)')
     parser.add_argument('--use_ocr', action='store_true', help='Use pre-extracted OCR text from data/ocr_extracted/')
     parser.add_argument('--ocr_folder', default='data/ocr_extracted', help='Folder containing OCR text files (default: data/ocr_extracted)')
+    parser.add_argument('--extract_ocr', action='store_true', help='Extract OCR text from PDF first (requires pytesseract, pdf2image, poppler)')
+    parser.add_argument('--poppler_path', default=None, help='Path to poppler binaries for OCR extraction (Windows: e.g., C:\\poppler\\Library\\bin)')
+    parser.add_argument('--tesseract_cmd', default=None, help='Path to tesseract executable (Windows: e.g., C:\\Program Files\\Tesseract-OCR\\tesseract.exe)')
     
     args = parser.parse_args()
     
@@ -952,7 +1123,14 @@ if __name__ == "__main__":
     archive_pkl = os.path.join(archive_dir, f"chunks_{dt_str}.pkl")
     archive_json = os.path.join(archive_dir, f"chunks_{dt_str}.json")
     
-    chunks = parse_pdf_rulebook(pdf_path, use_ocr=args.use_ocr, ocr_folder=args.ocr_folder)
+    chunks = parse_pdf_rulebook(
+        pdf_path, 
+        use_ocr=args.use_ocr, 
+        ocr_folder=args.ocr_folder,
+        extract_ocr=args.extract_ocr,
+        poppler_path=args.poppler_path,
+        tesseract_cmd=args.tesseract_cmd
+    )
     # Extract unique terms from all chunked text
     import requests
     all_text = " ".join(chunk["text"] for chunk in chunks)

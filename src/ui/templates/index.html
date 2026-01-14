@@ -79,6 +79,41 @@
                             <strong>Semantic Analysis:</strong> <span id="debug-semantic">-</span>
                         </div>
                         
+                        <div id="semantic-debug-section" style="display: none;">
+                            <h5 style="cursor: pointer; user-select: none;" onclick="toggleSemanticDetails()">
+                                <span id="semantic-toggle">▶</span> Semantic Analysis Details
+                            </h5>
+                            <div id="semantic-details-content" style="display: none;">
+                            <div class="debug-item">
+                                <strong>Original Query:</strong> <span id="semantic-original">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Enhanced Query:</strong> <span id="semantic-enhanced">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Question Type:</strong> <span id="semantic-question-type">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Query Words:</strong> <span id="semantic-query-words">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Key Nouns:</strong> <span id="semantic-key-nouns">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Action Verbs:</strong> <span id="semantic-action-verbs">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Game Concepts:</strong> <span id="semantic-game-concepts">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Domain Keywords:</strong> <span id="semantic-domain-keywords">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Intent Flags:</strong> <span id="semantic-intent-flags">-</span>
+                            </div>
+                            </div>
+                        </div>
+                        
                         <h5>Top 5 Chunks</h5>
                         <div id="debug-chunks" class="chunks-list">
                             <!-- Chunk details will be inserted here -->

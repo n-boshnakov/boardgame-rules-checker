@@ -68,6 +68,14 @@ class RulebookRetriever:
         # Allow per-request override of semantic analysis setting
         should_use_semantic = use_semantic if use_semantic is not None else self.use_semantic_analysis
         
+        # Extract domain keywords from question for answer filtering
+        domain_keywords = []
+        if should_use_semantic and self.semantic_analyzer:
+            try:
+                domain_keywords = self.semantic_analyzer.extract_domain_keywords(query)
+            except Exception:
+                pass
+        
         enhanced_query = query
         if should_use_semantic and self.semantic_analyzer:
             try:
@@ -178,6 +186,23 @@ class RulebookRetriever:
             except Exception:
                 # Graceful fallback: keep combined order
                 pass
+        
+        # Filter and boost results containing domain keywords
+        if domain_keywords:
+            # Boost chunks that contain critical keywords
+            for chunk in combined:
+                text_lower = chunk.get("text", "").lower()
+                keyword_matches = sum(1 for kw in domain_keywords if kw in text_lower)
+                if keyword_matches > 0:
+                    # Boost score based on keyword presence
+                    boost_factor = 1.0 + (0.2 * keyword_matches)  # 20% boost per keyword
+                    chunk["score"] = chunk.get("score", 0.0) * boost_factor
+                    chunk["keyword_matches"] = keyword_matches
+                else:
+                    chunk["keyword_matches"] = 0
+            
+            # Re-sort after boosting
+            combined.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
         return combined
 
@@ -438,6 +463,14 @@ class RulebookRetriever:
     
     def _generate_answer_sentence_level(self, question: str, chunks: List[Dict]) -> str:
         """Extract most relevant sentences from chunks using semantic similarity."""
+        # Extract domain keywords from question for filtering
+        domain_keywords = []
+        if self.semantic_analyzer:
+            try:
+                domain_keywords = self.semantic_analyzer.extract_domain_keywords(question)
+            except Exception:
+                pass
+        
         # Extract all sentences from top chunks with their scores
         sentence_candidates = []
         
@@ -464,13 +497,22 @@ class RulebookRetriever:
                 
                 # Boost score for sentences in top-ranked chunks
                 position_boost = 1.0 / (chunk_idx + 1) * 0.3
-                final_score = similarity + position_boost
+                
+                # Boost score if sentence contains domain keywords
+                keyword_boost = 0.0
+                sent_lower = sentence.lower()
+                keyword_count = sum(1 for kw in domain_keywords if kw in sent_lower)
+                if keyword_count > 0:
+                    keyword_boost = 0.15 * keyword_count  # 15% boost per keyword
+                
+                final_score = similarity + position_boost + keyword_boost
                 
                 sentence_candidates.append({
                     'sentence': sentence,
                     'score': final_score,
                     'chunk_idx': chunk_idx,
-                    'sent_idx': sent_idx
+                    'sent_idx': sent_idx,
+                    'keyword_count': keyword_count
                 })
         
         if not sentence_candidates:

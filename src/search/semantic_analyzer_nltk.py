@@ -52,22 +52,23 @@ class SemanticAnalyzerNLTK:
         
         # Domain vocabulary for board game concepts
         # Each concept includes itself plus synonyms/related terms
+        # Order matters: more specific/useful synonyms should come before generic concept names
         self.game_vocabulary = {
             'action': ['action', 'perform', 'execute', 'take', 'do', 'make', 'conduct'],
-            'movement': ['movement', 'move', 'travel', 'relocate', 'position', 'place'],
-            'combat': ['combat', 'fight', 'attack', 'battle', 'engage', 'shoot', 'damage', 'wound'],
-            'resource': ['resource', 'gain', 'spend', 'pay', 'receive', 'acquire', 'collect'],
-            'card': ['card', 'draw', 'discard', 'play', 'reveal', 'hand'],
-            'turn': ['turn', 'round', 'phase', 'step', 'sequence', 'order'],
-            'player': ['player', 'stalker', 'character', 'hero', 'agent'],
-            'equipment': ['equipment', 'gear', 'item', 'weapon', 'tool', 'artifact'],
-            'location': ['location', 'zone', 'area', 'space', 'territory', 'region', 'base'],
-            'condition': ['condition', 'status', 'effect', 'modifier', 'state'],
-            'test': ['test', 'check', 'roll', 'skill test', 'dice', 'attribute test'],
-            'enemy': ['enemy', 'mutant', 'monster', 'creature', 'threat', 'anomaly'],
-            'mission': ['mission', 'quest', 'task', 'objective', 'goal'],
-            'win': ['win', 'victory', 'succeed', 'complete', 'achieve'],
-            'lose': ['lose', 'defeat', 'fail', 'eliminated'],
+            'movement': ['move', 'travel', 'relocate', 'movement', 'position', 'place'],
+            'combat': ['attack', 'fight', 'shoot', 'battle', 'engage', 'combat', 'damage', 'wound'],
+            'resource': ['gain', 'spend', 'pay', 'receive', 'acquire', 'collect', 'resource'],
+            'card': ['draw', 'discard', 'play', 'reveal', 'card', 'hand'],
+            'turn': ['round', 'phase', 'step', 'turn', 'sequence', 'order'],
+            'player': ['stalker', 'character', 'hero', 'agent', 'player'],
+            'equipment': ['weapon', 'gear', 'item', 'tool', 'artifact', 'equipment'],
+            'location': ['zone', 'area', 'space', 'territory', 'region', 'base', 'location'],
+            'condition': ['status', 'effect', 'modifier', 'state', 'condition'],
+            'test': ['check', 'skill test', 'attribute test', 'roll', 'test', 'dice'],
+            'enemy': ['mutant', 'monster', 'creature', 'threat', 'anomaly', 'enemy'],
+            'mission': ['quest', 'task', 'objective', 'goal', 'mission'],
+            'win': ['victory', 'succeed', 'complete', 'achieve', 'win'],
+            'lose': ['defeat', 'fail', 'eliminated', 'lose'],
         }
         
         # Reverse mapping for concept identification
@@ -248,6 +249,46 @@ class SemanticAnalyzerNLTK:
         
         return unique_terms
     
+    def extract_domain_keywords(self, text: str) -> List[str]:
+        """
+        Extract domain-specific keywords that should be present in the answer.
+        These are critical terms that define the question's focus.
+        
+        Returns:
+            List of critical keywords (nouns, game-specific terms)
+        """
+        keywords = []
+        
+        # Get analysis
+        analysis = self.analyze(text)
+        text_lower = text.lower()
+        
+        # Priority 1: Domain-specific nouns (game mechanics, components)
+        # Common question words to exclude
+        stop_words = {'action', 'move', 'cost', 'through', 'can', 'does', 'what', 'how', 'when', 'where', 'who', 'why', 'do'}
+        
+        # Extract important nouns (but filter common question structure words)
+        for noun in analysis['key_nouns']:
+            if noun not in stop_words and len(noun) > 2:
+                keywords.append(noun)
+        
+        # Priority 2: Game-specific terms from vocabulary
+        domain_terms = ['water', 'reload', 'window', 'anomaly', 'artifact', 'enemy', 'stalker', 
+                       'radiation', 'loot', 'weapon', 'card', 'mission', 'combat', 'damage',
+                       'heal', 'rest', 'search', 'trade', 'wound', 'status', 'equipment', 'psionic', 'mutant']
+        
+        for term in domain_terms:
+            if term in text_lower and term not in keywords:
+                keywords.append(term)
+        
+        # Priority 3: Multi-word game concepts
+        multi_word_terms = ['line of sight', 'action point', 'skill test', 'zone of control', 'free action']
+        for term in multi_word_terms:
+            if term in text_lower:
+                keywords.append(term)
+        
+        return keywords[:5]  # Return top 5 most critical keywords
+    
     def enhance_query(self, query: str, max_additions: int = 1) -> str:
         """
         Enhance a query with semantic expansion - very conservative.
@@ -269,7 +310,9 @@ class SemanticAnalyzerNLTK:
         
         # Dynamic synonym expansion: For any concept word in query, add its most relevant synonym
         query_lower = query.lower()
-        query_words = set(query_lower.split())
+        # Remove punctuation and create set of clean words
+        import string
+        query_words = set(word.strip(string.punctuation) for word in query_lower.split())
         
         for concept, synonyms in self.game_vocabulary.items():
             # Check if any term from this concept appears as a whole word in query
@@ -282,23 +325,45 @@ class SemanticAnalyzerNLTK:
                         break  # Only add one synonym per concept
         
         # Only add the single most relevant term based on question type
+        # Make sure we don't add terms already in the query
         if intent['needs_procedural'] and analysis['action_verbs']:
-            # For procedural, add primary action verb
-            concept_additions.append(analysis['action_verbs'][0])
+            # For procedural, add primary action verb NOT already in query
+            for verb in analysis['action_verbs']:
+                if verb not in query_words:
+                    concept_additions.append(verb)
+                    break
         elif intent['needs_definition'] and analysis['key_nouns']:
-            # For definition, add primary noun
-            concept_additions.append(analysis['key_nouns'][0])
+            # For definition, add primary noun NOT already in query
+            for noun in analysis['key_nouns']:
+                if noun not in query_words:
+                    concept_additions.append(noun)
+                    break
         elif intent['needs_quantitative'] and analysis['key_nouns']:
-            # For quantitative, focus on the thing being counted
-            concept_additions.append(analysis['key_nouns'][0])
+            # For quantitative, focus on the thing being counted NOT already in query
+            for noun in analysis['key_nouns']:
+                if noun not in query_words:
+                    concept_additions.append(noun)
+                    break
         elif analysis['game_concepts']:
-            # For general questions, add only top game concept
-            concept_additions.append(analysis['game_concepts'][0])
+            # For general questions, add only top game concept NOT already in query
+            for concept in analysis['game_concepts']:
+                if concept not in query_words:
+                    concept_additions.append(concept)
+                    break
         
         # Prioritize synonyms, then concept terms, up to max_additions
-        all_additions = synonym_additions + concept_additions
-        if all_additions:
-            enhanced += " " + " ".join(all_additions[:max_additions])
+        # Filter out generic/structural words like "action", "do", "make" when we have more specific options
+        generic_words = {'action', 'do', 'make', 'perform', 'take', 'execute', 'conduct'}
+        
+        # Separate specific vs generic synonyms
+        specific_synonyms = [s for s in synonym_additions if s not in generic_words]
+        generic_synonyms = [s for s in synonym_additions if s in generic_words]
+        
+        # Prefer specific over generic
+        prioritized_additions = specific_synonyms + generic_synonyms + concept_additions
+        
+        if prioritized_additions:
+            enhanced += " " + " ".join(prioritized_additions[:max_additions])
         
         return enhanced.strip()
 

@@ -81,6 +81,38 @@ def ask_question():
         print(f"[UI] Question: {question}")
         print(f"[UI] Semantic analysis requested: {use_semantic}")
         
+        # Prepare semantic analysis debug info
+        semantic_debug = {}
+        if use_semantic and retriever.semantic_analyzer:
+            try:
+                import string
+                # Get semantic analysis
+                analysis = retriever.semantic_analyzer.analyze(question)
+                intent = retriever.semantic_analyzer.get_question_intent(question)
+                enhanced_query = retriever.semantic_analyzer.enhance_query(question, max_additions=1)
+                domain_keywords = retriever.semantic_analyzer.extract_domain_keywords(question)
+                
+                # Extract query words (cleaned)
+                query_words = list(set(word.strip(string.punctuation) for word in question.lower().split()))
+                
+                semantic_debug = {
+                    "original_query": question,
+                    "enhanced_query": enhanced_query,
+                    "query_words": sorted(query_words),
+                    "question_type": intent.get('question_type', 'unknown'),
+                    "intent_flags": {k: v for k, v in intent.items() if k != 'question_type'},
+                    "key_nouns": analysis.get('key_nouns', []),
+                    "action_verbs": analysis.get('action_verbs', []),
+                    "game_concepts": analysis.get('game_concepts', []),
+                    "domain_keywords": domain_keywords
+                }
+                
+                print(f"[UI] Enhanced query: {enhanced_query}")
+                print(f"[UI] Domain keywords: {domain_keywords}")
+            except Exception as e:
+                print(f"[UI] Semantic analysis debug failed: {e}")
+                semantic_debug = {"error": str(e)}
+        
         # Retrieve relevant chunks with detailed metadata
         # Pass use_semantic flag to enable/disable semantic query enhancement
         chunks = retriever.search(
@@ -144,7 +176,7 @@ def ask_question():
         
         processing_time = time.time() - start_time
         
-        return jsonify({
+        response_data = {
             "answer": answer,
             "source": source_type,
             "page": page,
@@ -160,7 +192,13 @@ def ask_question():
             "chunk_details": chunk_details,
             "processing_time": round(processing_time, 2),
             "semantic_analysis_used": use_semantic
-        })
+        }
+        
+        # Add semantic debug info if available
+        if semantic_debug:
+            response_data["semantic_debug"] = semantic_debug
+        
+        return jsonify(response_data)
         
     except Exception as e:
         import traceback

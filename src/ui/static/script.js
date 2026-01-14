@@ -94,6 +94,13 @@ function displayAnswer(data) {
     debugChunksCount.textContent = data.chunks_retrieved;
     debugSemantic.textContent = data.semantic_analysis_used ? 'Enabled' : 'Disabled';
     
+    // Display semantic debug info if available
+    if (data.semantic_debug) {
+        displaySemanticDebug(data.semantic_debug);
+    } else {
+        document.getElementById('semantic-debug-section').style.display = 'none';
+    }
+    
     // Chunk details
     displayChunks(data.chunk_details);
     
@@ -188,6 +195,73 @@ function displayChunks(chunks) {
         
         debugChunks.appendChild(chunkItem);
     });
+}
+
+// Display semantic debug information
+function displaySemanticDebug(semanticDebug) {
+    const section = document.getElementById('semantic-debug-section');
+    
+    if (semanticDebug.error) {
+        section.innerHTML = `<p class="error">Semantic analysis error: ${semanticDebug.error}</p>`;
+        section.style.display = 'block';
+        return;
+    }
+    
+    // Show section
+    section.style.display = 'block';
+    
+    // Update all semantic debug fields
+    document.getElementById('semantic-original').textContent = semanticDebug.original_query || '-';
+    document.getElementById('semantic-enhanced').textContent = semanticDebug.enhanced_query || '-';
+    document.getElementById('semantic-question-type').textContent = semanticDebug.question_type || '-';
+    
+    // Format arrays as comma-separated lists
+    document.getElementById('semantic-query-words').textContent = 
+        (semanticDebug.query_words && semanticDebug.query_words.length > 0) 
+            ? semanticDebug.query_words.join(', ') 
+            : '-';
+    
+    document.getElementById('semantic-key-nouns').textContent = 
+        (semanticDebug.key_nouns && semanticDebug.key_nouns.length > 0) 
+            ? semanticDebug.key_nouns.join(', ') 
+            : '-';
+    
+    document.getElementById('semantic-action-verbs').textContent = 
+        (semanticDebug.action_verbs && semanticDebug.action_verbs.length > 0) 
+            ? semanticDebug.action_verbs.join(', ') 
+            : '-';
+    
+    document.getElementById('semantic-game-concepts').textContent = 
+        (semanticDebug.game_concepts && semanticDebug.game_concepts.length > 0) 
+            ? semanticDebug.game_concepts.join(', ') 
+            : '-';
+    
+    document.getElementById('semantic-domain-keywords').textContent = 
+        (semanticDebug.domain_keywords && semanticDebug.domain_keywords.length > 0) 
+            ? semanticDebug.domain_keywords.join(', ') 
+            : '-';
+    
+    // Format intent flags
+    const intentFlags = semanticDebug.intent_flags || {};
+    const activeFlags = Object.entries(intentFlags)
+        .filter(([key, value]) => value)
+        .map(([key, value]) => key);
+    
+    document.getElementById('semantic-intent-flags').textContent = 
+        activeFlags.length > 0 ? activeFlags.join(', ') : 'none';
+}
+
+// Toggle semantic details visibility
+function toggleSemanticDetails() {
+    const content = document.getElementById('semantic-details-content');
+    const toggle = document.getElementById('semantic-toggle');
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        toggle.textContent = '▼';
+    } else {
+        content.style.display = 'none';
+        toggle.textContent = '▶';
+    }
 }
 
 // Show error message
