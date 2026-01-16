@@ -81,6 +81,18 @@ def ask_question():
         print(f"[UI] Question: {question}")
         print(f"[UI] Semantic analysis requested: {use_semantic}")
         
+        # Check for spelling corrections
+        spellcheck_corrections = []
+        original_question = question
+        if hasattr(retriever, 'spellcheck_question'):
+            corrected_question, corrections = retriever.spellcheck_question(question)
+            if corrections:
+                spellcheck_corrections = [{"original": orig, "corrected": corr} for orig, corr in corrections]
+                question = corrected_question
+                print(f"[UI] Spellcheck applied: {len(corrections)} corrections")
+                print(f"[UI] Original: {original_question}")
+                print(f"[UI] Corrected: {question}")
+        
         # Prepare semantic analysis debug info
         semantic_debug = {}
         if use_semantic and retriever.semantic_analyzer:
@@ -191,7 +203,10 @@ def ask_question():
             "chunks_retrieved": len(chunks),
             "chunk_details": chunk_details,
             "processing_time": round(processing_time, 2),
-            "semantic_analysis_used": use_semantic
+            "semantic_analysis_used": use_semantic,
+            "spellcheck_corrections": spellcheck_corrections,
+            "original_question": original_question if spellcheck_corrections else question,
+            "corrected_question": question if spellcheck_corrections else None
         }
         
         # Add semantic debug info if available

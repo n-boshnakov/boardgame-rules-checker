@@ -67,6 +67,17 @@ questionForm.addEventListener('submit', async (e) => {
 
 // Display answer and metadata
 function displayAnswer(data) {
+    // Display spellcheck corrections if any
+    if (data.spellcheck_corrections && data.spellcheck_corrections.length > 0) {
+        displaySpellcheckCorrections(data.spellcheck_corrections, data.original_question, data.corrected_question);
+    } else {
+        // Hide corrections section if no corrections
+        const correctionsSection = document.getElementById('spellcheck-corrections');
+        if (correctionsSection) {
+            correctionsSection.style.display = 'none';
+        }
+    }
+    
     // Answer text
     answerContent.textContent = data.answer;
     
@@ -262,6 +273,53 @@ function toggleSemanticDetails() {
         content.style.display = 'none';
         toggle.textContent = '▶';
     }
+}
+
+// Display spellcheck corrections
+function displaySpellcheckCorrections(corrections, originalQuestion, correctedQuestion) {
+    // Ensure corrections is an array
+    if (!Array.isArray(corrections) || corrections.length === 0) {
+        return;
+    }
+    
+    let correctionsSection = document.getElementById('spellcheck-corrections');
+    if (!correctionsSection) {
+        // Create corrections section if it doesn't exist
+        const section = document.createElement('div');
+        section.id = 'spellcheck-corrections';
+        section.className = 'spellcheck-corrections';
+        
+        // Insert before answer section
+        const answerSection = document.getElementById('answer-section');
+        answerSection.parentNode.insertBefore(section, answerSection);
+        correctionsSection = section;
+    }
+    
+    correctionsSection.style.display = 'block';
+    
+    // Build corrections message - handle both tuple arrays and objects
+    const correctionsList = corrections.map(item => {
+        if (Array.isArray(item) && item.length >= 2) {
+            return `"${item[0]}" → "${item[1]}"`;
+        } else if (typeof item === 'object' && item.original && item.corrected) {
+            return `"${item.original}" → "${item.corrected}"`;
+        }
+        return '';
+    }).filter(s => s).join(', ');
+    
+    correctionsSection.innerHTML = `
+        <div class="spellcheck-icon">✓</div>
+        <div class="spellcheck-content">
+            <div class="spellcheck-title">Spelling corrections applied</div>
+            <div class="spellcheck-details">
+                ${correctionsList}
+            </div>
+            <div class="spellcheck-queries">
+                <div><strong>Original:</strong> ${originalQuestion || 'N/A'}</div>
+                <div><strong>Corrected:</strong> ${correctedQuestion || 'N/A'}</div>
+            </div>
+        </div>
+    `;
 }
 
 // Show error message

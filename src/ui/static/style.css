@@ -166,6 +166,70 @@ button:disabled {
     animation: fadeIn 0.5s;
 }
 
+/* Spellcheck corrections section */
+.spellcheck-corrections {
+    background: linear-gradient(135deg, #e8f5e9, #c8e6c9);
+    border-left: 4px solid #4caf50;
+    border-radius: 8px;
+    padding: 15px 20px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: flex-start;
+    gap: 15px;
+    animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.spellcheck-icon {
+    font-size: 24px;
+    color: #4caf50;
+    flex-shrink: 0;
+}
+
+.spellcheck-content {
+    flex: 1;
+}
+
+.spellcheck-title {
+    font-weight: 600;
+    color: #2e7d32;
+    margin-bottom: 8px;
+    font-size: 0.95em;
+}
+
+.spellcheck-details {
+    font-size: 0.9em;
+    color: #388e3c;
+    margin-bottom: 8px;
+    font-family: 'Courier New', monospace;
+}
+
+.spellcheck-queries {
+    font-size: 0.85em;
+    color: #558b2f;
+    padding-top: 8px;
+    border-top: 1px solid #a5d6a7;
+}
+
+.spellcheck-queries div {
+    margin-bottom: 4px;
+}
+
+.spellcheck-queries strong {
+    font-weight: 600;
+    color: #33691e;
+}
+
 @keyframes fadeIn {
     from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }

@@ -1,11 +1,13 @@
 from sentence_transformers import SentenceTransformer, CrossEncoder, util
 from elasticsearch import Elasticsearch
 from elasticsearch import BadRequestError
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import numpy as np
 import re
 import json
 from pathlib import Path
+import sys
+import os
 
 ES_INDEX = "rulebook_chunks"
 MODEL_NAME = "BAAI/bge-m3"  # 1024 dims, better cross-domain
@@ -21,16 +23,13 @@ class RulebookRetriever:
         # Initialize semantic analyzer for advanced question understanding (default: False - use hybrid search only)
         self.use_semantic_analysis = use_semantic_analysis
         self.semantic_analyzer = None
+        
+        # Ensure src is in path
+        src_path = Path(__file__).parent.parent
+        if str(src_path) not in sys.path:
+            sys.path.insert(0, str(src_path))
+        
         if use_semantic_analysis:
-            import sys
-            import os
-            from pathlib import Path
-            
-            # Ensure src is in path
-            src_path = Path(__file__).parent.parent
-            if str(src_path) not in sys.path:
-                sys.path.insert(0, str(src_path))
-            
             # Load NLTK-based semantic analyzer (Python 3.14+ compatible)
             try:
                 import importlib
@@ -44,6 +43,55 @@ class RulebookRetriever:
             if not self.semantic_analyzer:
                 print(f"[Retriever] WARNING: All semantic analyzers failed to load, disabling semantic analysis")
                 self.use_semantic_analysis = False
+        
+        # Initialize spellchecker for question correction
+        self.spellchecker = None
+        self.unique_terms_path = None
+        try:
+            from parsers.spellcheck_utils import correct_spelling
+            self.spellchecker = correct_spelling
+            # Load game-specific terms to avoid "correcting" them
+            project_root = Path(__file__).parent.parent.parent
+            unique_terms = project_root / "data" / "processed" / "unique_terms.csv"
+            if unique_terms.exists():
+                self.unique_terms_path = str(unique_terms)
+                print("[Retriever] Spellchecker enabled with game-specific dictionary")
+            else:
+                print("[Retriever] Spellchecker enabled (no custom dictionary)")
+        except ImportError:
+            print("[Retriever] Spellchecker not available (install pyspellchecker)")
+        except Exception as e:
+            print(f"[Retriever] Spellchecker initialization warning: {e}")
+    
+    def spellcheck_question(self, question: str) -> Tuple[str, List[Tuple[str, str]]]:
+        """Correct spelling mistakes in the question.
+        
+        Args:
+            question: The original question text
+            
+        Returns:
+            Tuple of (corrected_question, list of (original, corrected) word pairs)
+        """
+        if not self.spellchecker:
+            return question, []
+        
+        try:
+            result = self.spellchecker(
+                question,
+                language='en',
+                generate_corrections_file=False,  # Don't save corrections
+                unique_terms_file=self.unique_terms_path
+            )
+            corrected = result.get('corrected_text', question)
+            corrections = [(orig, corr) for orig, corr in result.get('checked_words', []) if orig != corr]
+            
+            if corrections:
+                print(f"[Retriever] Spellcheck corrections: {corrections}")
+            
+            return corrected, corrections
+        except Exception as e:
+            print(f"[Retriever] Spellcheck error: {e}")
+            return question, []
     
     def embed_query(self, query: str) -> np.ndarray:
         # Normalize to unit vectors for cosine similarity stability
@@ -64,6 +112,13 @@ class RulebookRetriever:
         return self.es.search(index=ES_INDEX, body={"size": size, "query": script_query})
 
     def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85, use_semantic: bool = None) -> List[Dict]:
+        # Spellcheck the query first
+        corrected_query, corrections = self.spellcheck_question(query)
+        if corrections:
+            print(f"[Retriever] Original query: {query}")
+            print(f"[Retriever] Corrected query: {corrected_query}")
+            query = corrected_query
+        
         # Apply minimal semantic enhancement (max 1 term to avoid query drift)
         # Allow per-request override of semantic analysis setting
         should_use_semantic = use_semantic if use_semantic is not None else self.use_semantic_analysis
