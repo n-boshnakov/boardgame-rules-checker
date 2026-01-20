@@ -1,0 +1,48 @@
+{
+  "description": "Configuration for RAG (Retrieval-Augmented Generation) answer system",
+  "model_options": {
+    "extraction": {
+      "description": "Extraction-only mode (no LLM, fastest, no API costs)",
+      "model_type": "extraction",
+      "requires": []
+    },
+    "openai_gpt35": {
+      "description": "OpenAI GPT-3.5-turbo (good quality, requires API key)",
+      "model_type": "openai",
+      "model_name": "gpt-3.5-turbo",
+      "temperature": 0.3,
+      "max_tokens": 300,
+      "requires": ["OPENAI_API_KEY environment variable", "pip install openai"]
+    },
+    "openai_gpt4": {
+      "description": "OpenAI GPT-4 (best quality, higher cost, requires API key)",
+      "model_type": "openai",
+      "model_name": "gpt-4",
+      "temperature": 0.2,
+      "max_tokens": 300,
+      "requires": ["OPENAI_API_KEY environment variable", "pip install openai"]
+    },
+    "local_flan_t5_base": {
+      "description": "Local Flan-T5 Base (good quality, runs locally, ~1GB download)",
+      "model_type": "transformers",
+      "model_name": "google/flan-t5-base",
+      "temperature": 0.3,
+      "max_tokens": 300,
+      "requires": ["pip install transformers torch"]
+    },
+    "local_flan_t5_large": {
+      "description": "Local Flan-T5 Large (better quality, runs locally, ~3GB download)",
+      "model_type": "transformers",
+      "model_name": "google/flan-t5-large",
+      "temperature": 0.3,
+      "max_tokens": 300,
+      "requires": ["pip install transformers torch"]
+    }
+  },
+  "default_config": "extraction",
+  "notes": {
+    "temperature": "Lower values (0.1-0.3) = more focused/deterministic, higher values (0.7-1.0) = more creative",
+    "max_tokens": "Maximum length of generated answer in tokens (roughly 4 chars per token)",
+    "top_k_chunks": "Number of retrieved chunks to use as context (default: 3)"
+  }
+}

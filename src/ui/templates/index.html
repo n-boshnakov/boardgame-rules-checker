@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Boardgame Rules Checker</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎲 Boardgame Rules Checker</h1>
+            <div class="game-info">
+                <h2>{{ game.name }}</h2>
+                <p class="game-description">{{ game.description }}</p>
+                <p class="sources">Sources: {{ game.sources | join(', ') }}</p>
+            </div>
+        </header>
+
+        <main>
+            <div class="question-section">
+                <h3>Ask a Question</h3>
+                <form id="question-form">
+                    <div class="input-group">
+                        <textarea 
+                            id="question-input" 
+                            name="question" 
+                            placeholder="e.g., How many players can play? What happens when a stalker dies?"
+                            rows="3"
+                            required
+                        ></textarea>
+                        <div class="controls">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="semantic-toggle" name="use_semantic">
+                                <span>Use Semantic Analysis (Experimental)</span>
+                            </label>
+                            <button type="submit" id="ask-button">Ask Question</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+
+            <div id="loading" class="loading" style="display: none;">
+                <div class="spinner"></div>
+                <p>Searching rulebook...</p>
+            </div>
+
+            <div id="answer-section" class="answer-section" style="display: none;">
+                <div class="answer-header">
+                    <h3>Answer</h3>
+                    <div class="answer-meta">
+                        <span class="source-badge" id="source-badge">Rulebook</span>
+                        <span class="page-info" id="page-info">Page: -</span>
+                        <span class="confidence-badge" id="confidence-badge">Confidence: -</span>
+                    </div>
+                </div>
+                
+                <div class="answer-content" id="answer-content">
+                    <!-- Answer text will be inserted here -->
+                </div>
+
+                <div class="scores-summary">
+                    <h4>Quality Scores</h4>
+                    <div class="score-grid" id="score-grid">
+                        <!-- Scores will be inserted here -->
+                    </div>
+                </div>
+
+                <details class="debug-info">
+                    <summary>🔍 Debug Information</summary>
+                    <div class="debug-content">
+                        <div class="debug-item">
+                            <strong>Processing Time:</strong> <span id="debug-time">-</span>s
+                        </div>
+                        <div class="debug-item">
+                            <strong>Chunks Retrieved:</strong> <span id="debug-chunks-count">-</span>
+                        </div>
+                        <div class="debug-item">
+                            <strong>Semantic Analysis:</strong> <span id="debug-semantic">-</span>
+                        </div>
+                        
+                        <div id="semantic-debug-section" style="display: none;">
+                            <h5 style="cursor: pointer; user-select: none;" onclick="toggleSemanticDetails()">
+                                <span id="semantic-toggle">▶</span> Semantic Analysis Details
+                            </h5>
+                            <div id="semantic-details-content" style="display: none;">
+                            <div class="debug-item">
+                                <strong>Original Query:</strong> <span id="semantic-original">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Enhanced Query:</strong> <span id="semantic-enhanced">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Question Type:</strong> <span id="semantic-question-type">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Query Words:</strong> <span id="semantic-query-words">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Key Nouns:</strong> <span id="semantic-key-nouns">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Action Verbs:</strong> <span id="semantic-action-verbs">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Game Concepts:</strong> <span id="semantic-game-concepts">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Domain Keywords:</strong> <span id="semantic-domain-keywords">-</span>
+                            </div>
+                            <div class="debug-item">
+                                <strong>Intent Flags:</strong> <span id="semantic-intent-flags">-</span>
+                            </div>
+                            </div>
+                        </div>
+                        
+                        <h5>Top 5 Chunks</h5>
+                        <div id="debug-chunks" class="chunks-list">
+                            <!-- Chunk details will be inserted here -->
+                        </div>
+                    </div>
+                </details>
+            </div>
+
+            <div id="error-section" class="error-section" style="display: none;">
+                <h3>⚠️ Error</h3>
+                <p id="error-message"></p>
+            </div>
+        </main>
+
+        <footer>
+            <p>Powered by Elasticsearch + BGE-M3 Embeddings + CrossEncoder Reranking</p>
+            <p class="version">Multi-Dimensional Scoring: Relevance (35%) | Completeness (30%) | Accuracy (25%) | Conciseness (10%)</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
