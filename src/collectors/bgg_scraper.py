@@ -13,6 +13,14 @@ from typing import Dict, List, Optional
 from datetime import datetime
 import re
 try:
+    from langdetect import detect, LangDetectException
+    LANGDETECT_AVAILABLE = True
+except ImportError:
+    LANGDETECT_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("langdetect not available. Install with: pip install langdetect")
+
+try:
     from selenium import webdriver
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
@@ -37,7 +45,8 @@ class BGGForumScraper:
     
     def __init__(self, cache_dir: str = "data/raw/forum_cache", 
                  output_dir: str = "data/raw/forum_threads",
-                 delay: float = 2.5):
+                 delay: float = 2.5,
+                 filter_language: str = "en"):
         """
         Initialize the scraper.
         
@@ -45,10 +54,12 @@ class BGGForumScraper:
             cache_dir: Directory to cache raw HTML
             output_dir: Directory to save parsed JSON
             delay: Delay between requests in seconds (be polite!)
+            filter_language: Language code to filter for (e.g., 'en' for English). None to disable filtering.
         """
         self.cache_dir = Path(cache_dir)
         self.output_dir = Path(output_dir)
         self.delay = delay
+        self.filter_language = filter_language
         
         # Create directories
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -378,16 +389,27 @@ class BGGForumScraper:
         # Extract all posts
         posts = self._extract_posts(soup)
         
+        # Determine thread language
+        thread_language = self._determine_thread_language(posts)
+        
+        # Filter posts by language if needed
+        if self.filter_language:
+            original_count = len(posts)
+            posts = self._filter_posts_by_language(posts, self.filter_language)
+            if len(posts) < original_count:
+                logger.info(f"Thread {thread_id} language: {thread_language}, filtered {original_count - len(posts)} posts")
+        
         thread_data = {
             'thread_id': thread_id,
             'url': thread_url,
             'title': title,
             'scraped_date': datetime.now().isoformat(),
+            'language': thread_language,
             'post_count': len(posts),
             'posts': posts
         }
         
-        logger.info(f"Parsed thread {thread_id}: '{title}' ({len(posts)} posts)")
+        logger.info(f"Parsed thread {thread_id}: '{title}' (language: {thread_language}, {len(posts)} posts)")
         return thread_data
     
     def _extract_title(self, soup: BeautifulSoup) -> str:
@@ -473,13 +495,65 @@ class BGGForumScraper:
         # Extract post ID if available
         post_id = post_elem.get('id', f"post_{index}")
         
+        # Detect language
+        language = self._detect_language(content)
+        
         return {
             'post_id': post_id,
             'author': author,
             'date': date_str,
             'content': content,
-            'position': index
+            'position': index,
+            'language': language
         }
+    
+    def _detect_language(self, text: str) -> str:
+        """Detect language of text using langdetect."""
+        if not LANGDETECT_AVAILABLE or not text:
+            return "unknown"
+        
+        # For very short texts, langdetect can be unreliable
+        # If text is very short (< 20 chars), assume English (most forum posts are in English)
+        if len(text) < 20:
+            return "en"
+        
+        try:
+            detected = detect(text)
+            # langdetect can misidentify short English posts with foreign words as non-English
+            # If the text is short and contains common English words, override detection
+            if len(text) < 50:
+                common_english_words = ['yes', 'no', 'the', 'is', 'are', 'this', 'that', 'what', 'where', 'when', 'how']
+                text_lower = text.lower()
+                if any(word in text_lower for word in common_english_words):
+                    return "en"
+            
+            return detected
+        except LangDetectException:
+            # If detection fails, default to English for forum context
+            return "en"
+    
+    def _determine_thread_language(self, posts: List[Dict]) -> str:
+        """Determine thread language from posts."""
+        if not posts:
+            return "unknown"
+        
+        # Use first post (usually the question) for language detection
+        # as it's typically the most substantial
+        first_post = posts[0]
+        return first_post.get('language', 'unknown')
+    
+    def _filter_posts_by_language(self, posts: List[Dict], target_lang: str = "en") -> List[Dict]:
+        """Filter posts to keep only those in the target language."""
+        if not target_lang:
+            return posts
+        
+        filtered = [post for post in posts if post.get('language', 'unknown') == target_lang]
+        
+        if len(filtered) < len(posts):
+            removed_count = len(posts) - len(filtered)
+            logger.info(f"Filtered out {removed_count} non-{target_lang} posts")
+        
+        return filtered
     
     def save_thread(self, thread_data: Dict):
         """Save parsed thread data to JSON."""
@@ -492,7 +566,7 @@ class BGGForumScraper:
         logger.info(f"Saved thread {thread_id} to {output_file}")
     
     def scrape_forum(self, forum_url: str, max_threads: int = 50, 
-                     max_pages: int = 3) -> List[Dict]:
+                     max_pages: int = 10) -> List[Dict]:
         """
         Scrape entire forum.
         
@@ -579,11 +653,11 @@ def main():
     logger.info("This will extract all threads from the forum page")
     
     # Scrape all threads from the rules forum
-    # Adjust max_threads and max_pages based on forum size
+    # 7 pages × 50 threads per page = 350 threads total
     threads = scraper.scrape_forum(
         forum_url=STALKER_RULES_FORUM,
-        max_threads=200,  # Increase if forum has more threads
-        max_pages=10      # Number of forum pages to check
+        max_threads=400,  # Set higher than needed to catch all threads
+        max_pages=7       # Number of forum pages to scrape
     )
     
     logger.info(f"Scraping complete! Successfully scraped {len(threads)} threads")
