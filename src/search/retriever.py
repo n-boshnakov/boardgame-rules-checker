@@ -240,7 +240,13 @@ class RulebookRetriever:
                 k_score = k_norm.get(_id, 0.0)
                 final_score = hybrid_weight * v_score + (1 - hybrid_weight) * k_score
                 h = v_dict.get(_id) or k_dict.get(_id)
-                combined.append({"score": final_score, **h["_source"]})
+                
+                # Create document dict and handle score collision
+                doc = dict(h["_source"])
+                if "score" in doc:
+                    doc["forum_quality_score"] = doc.pop("score")
+                doc["score"] = final_score
+                combined.append(doc)
 
             # Sort by score descending and take top_k
             combined = sorted(combined, key=lambda x: x["score"], reverse=True)[:top_k]
@@ -284,17 +290,24 @@ class RulebookRetriever:
 
         return combined
     
-    def search_dual_source(self, query: str, top_k: int = 5, forum_weight: float = 0.5) -> Dict:
+    def search_dual_source(self, query: str, top_k: int = 5, forum_weight: float = 0.5, use_semantic: bool = None) -> tuple:
         """Search both forum Q&A and rulebook, returning best source.
         
         Args:
             query: User question
             top_k: Number of results per source
             forum_weight: Weight for forum results (0-1), rulebook gets (1-weight)
+            use_semantic: Enable semantic query expansion (None = use instance default)
         
         Returns:
-            Dict with source, answer, confidence, and debug info
+            Tuple: (chunks, source, forum_confidence, rulebook_confidence)
+                chunks: List of result dicts from chosen source
+                source: "forum" or "rulebook"
+                forum_confidence: Float 0-1
+                rulebook_confidence: Float 0-1
         """
+        # Determine semantic setting
+        should_use_semantic = use_semantic if use_semantic is not None else self.use_semantic_analysis
         # Spellcheck once
         corrected_query, corrections = self.spellcheck_question(query)
         if corrections:
@@ -318,7 +331,7 @@ class RulebookRetriever:
             top_k=top_k,
             search_type="hybrid",
             hybrid_weight=0.85,
-            use_semantic=self.use_semantic_analysis,
+            use_semantic=should_use_semantic,
             source_type="rulebook"  # Filter to rulebook only
         )
         
@@ -357,74 +370,23 @@ class RulebookRetriever:
         # This ensures forum has fair chance when questions match well
         
         if not forum_results and not rulebook_results:
-            return {
-                'source': 'none',
-                'answer': 'No relevant information found in rulebook or forum.',
-                'confidence': 0.0,
-                'forum_confidence': 0.0,
-                'rulebook_confidence': 0.0,
-                'reason': 'No results from either source'
-            }
+            return [], "none", 0.0, 0.0
         
         # Use weighted scores for decision
         if forum_weighted > rulebook_weighted:
             # Forum has higher weighted score - use it
-            top_forum = forum_results[0]
-            answer = top_forum.get('answer', 'No answer found.')
-            return {
-                'source': 'forum',
-                'answer': answer,
-                'confidence': forum_confidence,
-                'question': top_forum.get('text', ''),
-                'thread_url': top_forum.get('url', ''),
-                'thread_id': top_forum.get('thread_id', ''),
-                'forum_confidence': forum_confidence,
-                'rulebook_confidence': rulebook_confidence,
-                'all_forum': forum_results,
-                'all_rulebook': rulebook_results,
-                'reason': f'Forum chosen (weighted: forum={forum_weighted:.3f} > rulebook={rulebook_weighted:.3f})'
-            }
+            print(f"[DualSearch] Selected: Forum (weighted {forum_weighted:.3f} > {rulebook_weighted:.3f})")
+            return forum_results, "forum", forum_confidence, rulebook_confidence
         elif rulebook_results:
             # Rulebook has higher or equal weighted score - use it
-            # Use rulebook
-            answer = self.generate_answer(query, rulebook_results, use_semantic=self.use_semantic_analysis)
-            return {
-                'source': 'rulebook',
-                'answer': answer,
-                'confidence': rulebook_confidence,
-                'top_chunk': rulebook_results[0] if rulebook_results else None,
-                'forum_confidence': forum_confidence,
-                'rulebook_confidence': rulebook_confidence,
-                'all_forum': forum_results,
-                'all_rulebook': rulebook_results,
-                'reason': f'Rulebook chosen (weighted: rulebook={rulebook_weighted:.3f} >= forum={forum_weighted:.3f})'
-            }
+            print(f"[DualSearch] Selected: Rulebook (weighted {rulebook_weighted:.3f} >= {forum_weighted:.3f})")
+            return rulebook_results, "rulebook", forum_confidence, rulebook_confidence
         elif forum_results:
             # Only forum has results
-            top_forum = forum_results[0]
-            answer = top_forum.get('answer', 'No answer found.')
-            return {
-                'source': 'forum',
-                'answer': answer,
-                'confidence': forum_confidence,
-                'question': top_forum.get('text', ''),
-                'thread_url': top_forum.get('url', ''),
-                'thread_id': top_forum.get('thread_id', ''),
-                'forum_confidence': forum_confidence,
-                'rulebook_confidence': rulebook_confidence,
-                'all_forum': forum_results,
-                'all_rulebook': rulebook_results,
-                'reason': f'Forum chosen (only source available)'
-            }
+            print(f"[DualSearch] Selected: Forum (only source available)")
+            return forum_results, "forum", forum_confidence, rulebook_confidence
         else:
-            return {
-                'source': 'none',
-                'answer': 'No relevant information found in rulebook or forum.',
-                'confidence': 0.0,
-                'forum_confidence': 0.0,
-                'rulebook_confidence': 0.0,
-                'reason': 'No results from either source'
-            }
+            return [], "none", 0.0, 0.0
 
     def generate_answer(self, question: str, chunks: List[Dict], use_semantic: bool = None) -> str:
         """Generate answer by concatenating top relevant chunks (extractive method).

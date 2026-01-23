@@ -2,6 +2,7 @@
 const questionForm = document.getElementById('question-form');
 const questionInput = document.getElementById('question-input');
 const semanticToggle = document.getElementById('semantic-toggle');
+const dualSourceToggle = document.getElementById('dual-source-toggle');
 const askButton = document.getElementById('ask-button');
 const loadingSection = document.getElementById('loading');
 const answerSection = document.getElementById('answer-section');
@@ -44,7 +45,9 @@ questionForm.addEventListener('submit', async (e) => {
             },
             body: JSON.stringify({
                 question: question,
-                use_semantic: semanticToggle.checked
+                use_semantic: semanticToggle.checked,
+                use_dual_source: dualSourceToggle.checked,
+                forum_weight: 0.5
             })
         });
         
@@ -100,10 +103,32 @@ function displayAnswer(data) {
     // Quality scores
     displayScores(data.scores);
     
+    // Forum metadata (if available)
+    if (data.forum_metadata && data.source === 'forum') {
+        displayForumMetadata(data.forum_metadata);
+    } else {
+        document.getElementById('forum-metadata').style.display = 'none';
+    }
+    
     // Debug information
     debugTime.textContent = data.processing_time;
     debugChunksCount.textContent = data.chunks_retrieved;
     debugSemantic.textContent = data.semantic_analysis_used ? 'Enabled' : 'Disabled';
+    
+    const debugDualSource = document.getElementById('debug-dual-source');
+    if (debugDualSource) {
+        debugDualSource.textContent = data.dual_source_used ? 'Enabled' : 'Disabled';
+    }
+    
+    // Confidence bars (if dual-source)
+    if (data.dual_source_used && data.forum_confidence !== undefined && data.rulebook_confidence !== undefined) {
+        displayConfidenceBars(data.forum_confidence, data.rulebook_confidence, data.source);
+    } else {
+        const confidenceBars = document.getElementById('confidence-bars');
+        if (confidenceBars) {
+            confidenceBars.style.display = 'none';
+        }
+    }
     
     // Display semantic debug info if available
     if (data.semantic_debug) {
@@ -190,10 +215,20 @@ function displayChunks(chunks) {
         header.appendChild(rank);
         header.appendChild(score);
         
-        // Metadata
+        // Metadata - different for forum vs rulebook chunks
         const meta = document.createElement('div');
         meta.className = 'chunk-meta';
-        meta.textContent = `Page: ${chunk.page || 'N/A'} | Section: ${chunk.section}`;
+        
+        if (chunk.source_type === 'forum') {
+            // Forum chunk: show answered_by and link
+            const answerBy = chunk.answered_by || 'Unknown';
+            const threadUrl = chunk.thread_url || '#';
+            const qualityScore = chunk.quality_score || 'N/A';
+            meta.innerHTML = `<strong>Answered by:</strong> ${answerBy} | <strong>Quality:</strong> ${qualityScore}/10 | <a href="${threadUrl}" target="_blank">View Thread</a>`;
+        } else {
+            // Rulebook chunk: show page and section
+            meta.textContent = `Page: ${chunk.page || 'N/A'} | Section: ${chunk.section}`;
+        }
         
         // Text content
         const text = document.createElement('div');
@@ -326,6 +361,59 @@ function displaySpellcheckCorrections(corrections, originalQuestion, correctedQu
 function showError(message) {
     errorMessage.textContent = message;
     errorSection.style.display = 'block';
+}
+
+// Display forum metadata
+function displayForumMetadata(metadata) {
+    const section = document.getElementById('forum-metadata');
+    const qualityEl = document.getElementById('forum-quality');
+    const userEl = document.getElementById('forum-user');
+    const urlEl = document.getElementById('forum-url');
+    
+    if (metadata.quality_score) {
+        qualityEl.textContent = metadata.quality_score;
+    } else {
+        qualityEl.textContent = 'N/A';
+    }
+    
+    userEl.textContent = metadata.answer_user || 'Unknown';
+    
+    if (metadata.url) {
+        urlEl.href = metadata.url;
+        urlEl.style.display = 'inline';
+    } else {
+        urlEl.style.display = 'none';
+    }
+    
+    section.style.display = 'block';
+}
+
+// Display confidence bars for dual-source comparison
+function displayConfidenceBars(forumConf, rulebookConf, selectedSource) {
+    const section = document.getElementById('confidence-bars');
+    const forumBar = document.getElementById('forum-confidence-bar');
+    const rulebookBar = document.getElementById('rulebook-confidence-bar');
+    const forumValue = document.getElementById('forum-confidence-value');
+    const rulebookValue = document.getElementById('rulebook-confidence-value');
+    
+    const forumPct = (forumConf * 100).toFixed(0);
+    const rulebookPct = (rulebookConf * 100).toFixed(0);
+    
+    forumBar.style.width = forumPct + '%';
+    rulebookBar.style.width = rulebookPct + '%';
+    forumValue.textContent = forumPct + '%';
+    rulebookValue.textContent = rulebookPct + '%';
+    
+    // Highlight selected source
+    if (selectedSource === 'forum') {
+        forumBar.style.backgroundColor = '#4CAF50';
+        rulebookBar.style.backgroundColor = '#ccc';
+    } else {
+        forumBar.style.backgroundColor = '#ccc';
+        rulebookBar.style.backgroundColor = '#2196F3';
+    }
+    
+    section.style.display = 'block';
 }
 
 // Helper function

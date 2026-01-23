@@ -30,10 +30,16 @@
                             required
                         ></textarea>
                         <div class="controls">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="semantic-toggle" name="use_semantic">
-                                <span>Use Semantic Analysis (Experimental)</span>
-                            </label>
+                            <div class="toggles-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="dual-source-toggle" name="use_dual_source">
+                                    <span>🔄 Search Forums & Rulebook</span>
+                                </label>
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="semantic-toggle" name="use_semantic">
+                                    <span>🧠 Semantic Analysis</span>
+                                </label>
+                            </div>
                             <button type="submit" id="ask-button">Ask Question</button>
                         </div>
                     </div>
@@ -58,6 +64,21 @@
                 <div class="answer-content" id="answer-content">
                     <!-- Answer text will be inserted here -->
                 </div>
+                
+                <div id="forum-metadata" class="forum-metadata" style="display: none;">
+                    <h4>💬 Forum Thread Information</h4>
+                    <div class="forum-details">
+                        <div class="forum-item">
+                            <strong>Quality Score:</strong> <span id="forum-quality">-</span>/10
+                        </div>
+                        <div class="forum-item">
+                            <strong>Answered by:</strong> <span id="forum-user">-</span>
+                        </div>
+                        <div class="forum-item">
+                            <strong>Thread:</strong> <a id="forum-url" href="#" target="_blank">View on BoardGameGeek</a>
+                        </div>
+                    </div>
+                </div>
 
                 <div class="scores-summary">
                     <h4>Quality Scores</h4>
@@ -77,6 +98,27 @@
                         </div>
                         <div class="debug-item">
                             <strong>Semantic Analysis:</strong> <span id="debug-semantic">-</span>
+                        </div>
+                        <div class="debug-item">
+                            <strong>Dual-Source Search:</strong> <span id="debug-dual-source">-</span>
+                        </div>
+                        
+                        <div id="confidence-bars" style="display: none;">
+                            <h5>Source Confidence Comparison</h5>
+                            <div class="confidence-bar-item">
+                                <span class="confidence-label">Forum:</span>
+                                <div class="confidence-bar-bg">
+                                    <div class="confidence-bar-fill" id="forum-confidence-bar" style="width: 0%;"></div>
+                                </div>
+                                <span class="confidence-value" id="forum-confidence-value">0%</span>
+                            </div>
+                            <div class="confidence-bar-item">
+                                <span class="confidence-label">Rulebook:</span>
+                                <div class="confidence-bar-bg">
+                                    <div class="confidence-bar-fill" id="rulebook-confidence-bar" style="width: 0%;"></div>
+                                </div>
+                                <span class="confidence-value" id="rulebook-confidence-value">0%</span>
+                            </div>
                         </div>
                         
                         <div id="semantic-debug-section" style="display: none;">
@@ -131,6 +173,7 @@
         <footer>
             <p>Powered by Elasticsearch + BGE-M3 Embeddings + CrossEncoder Reranking</p>
             <p class="version">Multi-Dimensional Scoring: Relevance (35%) | Completeness (30%) | Accuracy (25%) | Conciseness (10%)</p>
+            <p class="version">🔄 Dual-Source: Search both Forums & Rulebook | 🧠 Semantic Analysis: NLTK-based query expansion</p>
         </footer>
     </div>
 
