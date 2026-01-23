@@ -97,7 +97,7 @@ class RulebookRetriever:
         # Normalize to unit vectors for cosine similarity stability
         return self.model.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
 
-    def _vector_search_script(self, query_vec: np.ndarray, size: int, section: Optional[str] = None):
+    def _vector_search_script(self, query_vec: np.ndarray, size: int, section: Optional[str] = None, source_type: Optional[str] = None):
         script_query = {
             "script_score": {
                 "query": {"bool": {"must": []}},
@@ -107,11 +107,16 @@ class RulebookRetriever:
                 }
             }
         }
+        filters = []
         if section:
-            script_query["script_score"]["query"]["bool"]["filter"] = [{"term": {"section": section}}]
+            filters.append({"term": {"section": section}})
+        if source_type:
+            filters.append({"term": {"source_type": source_type}})
+        if filters:
+            script_query["script_score"]["query"]["bool"]["filter"] = filters
         return self.es.search(index=ES_INDEX, body={"size": size, "query": script_query})
 
-    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85, use_semantic: bool = None) -> List[Dict]:
+    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85, use_semantic: bool = None, source_type: Optional[str] = None) -> List[Dict]:
         # Spellcheck the query first
         corrected_query, corrections = self.spellcheck_question(query)
         if corrections:
@@ -142,11 +147,19 @@ class RulebookRetriever:
 
         def parse_hits(res):
             hits = res.get("hits", {}).get("hits", [])
-            return [{"score": h.get("_score", 0.0), **h["_source"]} for h in hits]
+            parsed = []
+            for h in hits:
+                doc = dict(h["_source"])
+                # Preserve ES relevance score, rename forum quality score if present
+                if "score" in doc:
+                    doc["forum_quality_score"] = doc.pop("score")
+                doc["score"] = h.get("_score", 0.0)
+                parsed.append(doc)
+            return parsed
 
         if search_type == "vector":
-            res = self._vector_search_script(query_vec, size=top_k, section=section)
-            return parse_hits(res)
+            res = self._vector_search_script(query_vec, size=top_k, section=section, source_type=source_type)
+            combined = parse_hits(res)
 
         elif search_type == "keyword":
             # Prefer precise phrasing while retaining recall
@@ -162,15 +175,20 @@ class RulebookRetriever:
                     "minimum_should_match": 0
                 }
             }
+            filters = []
             if section:
-                keyword_query["bool"]["filter"] = [{"term": {"section": section}}]
+                filters.append({"term": {"section": section}})
+            if source_type:
+                filters.append({"term": {"source_type": source_type}})
+            if filters:
+                keyword_query["bool"]["filter"] = filters
             res = self.es.search(index=ES_INDEX, body={"size": top_k, "query": keyword_query})
             return parse_hits(res)
 
         elif search_type == "hybrid":
             # Vector side: fetch more for merging (balanced, low overhead)
             vec_size = max(top_k * 5, 25)
-            vector_res = self._vector_search_script(query_vec, size=vec_size, section=section)
+            vector_res = self._vector_search_script(query_vec, size=vec_size, section=section, source_type=source_type)
             vector_hits = vector_res.get("hits", {}).get("hits", [])
 
             # Keyword side: prefer phrasing + and-operator; same pool size
@@ -186,8 +204,13 @@ class RulebookRetriever:
                     "minimum_should_match": 0
                 }
             }
+            filters = []
             if section:
-                keyword_query["bool"]["filter"] = [{"term": {"section": section}}]
+                filters.append({"term": {"section": section}})
+            if source_type:
+                filters.append({"term": {"source_type": source_type}})
+            if filters:
+                keyword_query["bool"]["filter"] = filters
             keyword_res = self.es.search(index=ES_INDEX, body={"size": vec_size, "query": keyword_query})
             keyword_hits = keyword_res.get("hits", {}).get("hits", [])
 
@@ -260,6 +283,148 @@ class RulebookRetriever:
             combined.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
         return combined
+    
+    def search_dual_source(self, query: str, top_k: int = 5, forum_weight: float = 0.5) -> Dict:
+        """Search both forum Q&A and rulebook, returning best source.
+        
+        Args:
+            query: User question
+            top_k: Number of results per source
+            forum_weight: Weight for forum results (0-1), rulebook gets (1-weight)
+        
+        Returns:
+            Dict with source, answer, confidence, and debug info
+        """
+        # Spellcheck once
+        corrected_query, corrections = self.spellcheck_question(query)
+        if corrections:
+            print(f"[DualSearch] Corrected: {query} -> {corrected_query}")
+            query = corrected_query
+        
+        # Search forum for similar questions
+        print(f"[DualSearch] Searching forum Q&A...")
+        forum_results = self.search(
+            query, 
+            top_k=top_k, 
+            search_type="vector",  # Pure semantic for question matching
+            use_semantic=False,  # No query expansion for forum
+            source_type="forum"  # Filter to forum only
+        )
+        
+        # Search rulebook with hybrid approach
+        print(f"[DualSearch] Searching rulebook...")
+        rulebook_results = self.search(
+            query,
+            top_k=top_k,
+            search_type="hybrid",
+            hybrid_weight=0.85,
+            use_semantic=self.use_semantic_analysis,
+            source_type="rulebook"  # Filter to rulebook only
+        )
+        
+        # Calculate confidence scores
+        forum_confidence = forum_results[0].get('score', 0.0) if forum_results else 0.0
+        rulebook_confidence = rulebook_results[0].get('score', 0.0) if rulebook_results else 0.0
+        
+        # Normalize scores to 0-1 range
+        # Vector search uses script_score which returns: cosineSimilarity() + 1.0
+        # This gives scores in range [1.0, 2.0] where 1.0 = no similarity, 2.0 = perfect match
+        # Hybrid search combines normalized vector + keyword scores
+        
+        # For debugging: print raw scores
+        print(f"[DualSearch] Raw scores - Forum: {forum_confidence:.3f}, Rulebook: {rulebook_confidence:.3f}")
+        
+        if forum_results:
+            # Vector search: normalize from [1.0, 2.0] to [0, 1]
+            forum_confidence = max(0, min(1, (forum_confidence - 1.0)))
+        
+        if rulebook_results:
+            # Hybrid search: check if needs normalization
+            if rulebook_confidence > 1.0:
+                # Uses script_score, normalize from [1.0, 2.0] to [0, 1]
+                rulebook_confidence = max(0, min(1, (rulebook_confidence - 1.0)))
+            # else: already normalized by hybrid merge (0-1), keep as-is
+        
+        # Apply source weights
+        forum_weighted = forum_confidence * forum_weight
+        rulebook_weighted = rulebook_confidence * (1 - forum_weight)
+        
+        print(f"[DualSearch] Forum confidence: {forum_confidence:.3f} (weighted: {forum_weighted:.3f})")
+        print(f"[DualSearch] Rulebook confidence: {rulebook_confidence:.3f} (weighted: {rulebook_weighted:.3f})")
+        
+        # Decision logic: Choose source with higher weighted confidence
+        # Only prefer rulebook if it's clearly better (>0.1 difference after weighting)
+        # This ensures forum has fair chance when questions match well
+        
+        if not forum_results and not rulebook_results:
+            return {
+                'source': 'none',
+                'answer': 'No relevant information found in rulebook or forum.',
+                'confidence': 0.0,
+                'forum_confidence': 0.0,
+                'rulebook_confidence': 0.0,
+                'reason': 'No results from either source'
+            }
+        
+        # Use weighted scores for decision
+        if forum_weighted > rulebook_weighted:
+            # Forum has higher weighted score - use it
+            top_forum = forum_results[0]
+            answer = top_forum.get('answer', 'No answer found.')
+            return {
+                'source': 'forum',
+                'answer': answer,
+                'confidence': forum_confidence,
+                'question': top_forum.get('text', ''),
+                'thread_url': top_forum.get('url', ''),
+                'thread_id': top_forum.get('thread_id', ''),
+                'forum_confidence': forum_confidence,
+                'rulebook_confidence': rulebook_confidence,
+                'all_forum': forum_results,
+                'all_rulebook': rulebook_results,
+                'reason': f'Forum chosen (weighted: forum={forum_weighted:.3f} > rulebook={rulebook_weighted:.3f})'
+            }
+        elif rulebook_results:
+            # Rulebook has higher or equal weighted score - use it
+            # Use rulebook
+            answer = self.generate_answer(query, rulebook_results, use_semantic=self.use_semantic_analysis)
+            return {
+                'source': 'rulebook',
+                'answer': answer,
+                'confidence': rulebook_confidence,
+                'top_chunk': rulebook_results[0] if rulebook_results else None,
+                'forum_confidence': forum_confidence,
+                'rulebook_confidence': rulebook_confidence,
+                'all_forum': forum_results,
+                'all_rulebook': rulebook_results,
+                'reason': f'Rulebook chosen (weighted: rulebook={rulebook_weighted:.3f} >= forum={forum_weighted:.3f})'
+            }
+        elif forum_results:
+            # Only forum has results
+            top_forum = forum_results[0]
+            answer = top_forum.get('answer', 'No answer found.')
+            return {
+                'source': 'forum',
+                'answer': answer,
+                'confidence': forum_confidence,
+                'question': top_forum.get('text', ''),
+                'thread_url': top_forum.get('url', ''),
+                'thread_id': top_forum.get('thread_id', ''),
+                'forum_confidence': forum_confidence,
+                'rulebook_confidence': rulebook_confidence,
+                'all_forum': forum_results,
+                'all_rulebook': rulebook_results,
+                'reason': f'Forum chosen (only source available)'
+            }
+        else:
+            return {
+                'source': 'none',
+                'answer': 'No relevant information found in rulebook or forum.',
+                'confidence': 0.0,
+                'forum_confidence': 0.0,
+                'rulebook_confidence': 0.0,
+                'reason': 'No results from either source'
+            }
 
     def generate_answer(self, question: str, chunks: List[Dict], use_semantic: bool = None) -> str:
         """Generate answer by concatenating top relevant chunks (extractive method).
