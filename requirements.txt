@@ -17,6 +17,12 @@ pyarrow>=22.0.0
 # Document Processing
 PyMuPDF>=1.26.0
 
+# Web Scraping
+beautifulsoup4>=4.12.2
+lxml>=5.1.0
+langdetect>=1.0.9
+selenium>=4.16.0
+
 # Text Processing
 RapidFuzz>=3.14.0
 regex>=2025.11.0
