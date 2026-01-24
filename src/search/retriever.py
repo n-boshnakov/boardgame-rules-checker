@@ -220,13 +220,25 @@ class RulebookRetriever:
                 return hit.get("_id") or (src.get("page"), src.get("section"), (src.get("text") or "")[:30])
 
             def norm_scores(hits):
+                """Normalize scores to [0, 1] range, preserving relative differences.
+                For vector scores using script_score (cosineSimilarity + 1.0), we normalize from [1.0, 2.0].
+                For keyword scores, we use min-max within the batch.
+                """
                 scores = [h.get("_score", 0.0) for h in hits]
                 if not scores:
                     return {}
                 mn, mx = min(scores), max(scores)
-                if mx == mn:
-                    return {doc_id(h): 1.0 for h in hits}
-                return {doc_id(h): (h.get("_score", 0.0) - mn) / (mx - mn) for h in hits}
+                
+                # Check if scores are in [1.0, 2.0] range (vector search with script_score)
+                # If so, normalize from absolute range to preserve cross-batch comparisons
+                if mn >= 0.9 and mx <= 2.1:  # Allow small margin for floating point
+                    # Vector scores: normalize from [1.0, 2.0] to [0, 1]
+                    return {doc_id(h): max(0.0, min(1.0, (h.get("_score", 0.0) - 1.0))) for h in hits}
+                else:
+                    # Keyword scores: use min-max normalization
+                    if mx == mn:
+                        return {doc_id(h): 1.0 for h in hits}
+                    return {doc_id(h): (h.get("_score", 0.0) - mn) / (mx - mn) for h in hits}
 
             v_norm = norm_scores(vector_hits)
             k_norm = norm_scores(keyword_hits)
@@ -339,24 +351,24 @@ class RulebookRetriever:
         forum_confidence = forum_results[0].get('score', 0.0) if forum_results else 0.0
         rulebook_confidence = rulebook_results[0].get('score', 0.0) if rulebook_results else 0.0
         
-        # Normalize scores to 0-1 range
+        # Normalize scores to 0-1 range for consistent comparison
         # Vector search uses script_score which returns: cosineSimilarity() + 1.0
         # This gives scores in range [1.0, 2.0] where 1.0 = no similarity, 2.0 = perfect match
-        # Hybrid search combines normalized vector + keyword scores
+        # Hybrid search now uses improved normalization that preserves absolute scores
         
         # For debugging: print raw scores
         print(f"[DualSearch] Raw scores - Forum: {forum_confidence:.3f}, Rulebook: {rulebook_confidence:.3f}")
         
-        if forum_results:
+        # Normalize forum scores (pure vector search)
+        if forum_results and forum_confidence > 1.0:
             # Vector search: normalize from [1.0, 2.0] to [0, 1]
             forum_confidence = max(0, min(1, (forum_confidence - 1.0)))
         
-        if rulebook_results:
-            # Hybrid search: check if needs normalization
-            if rulebook_confidence > 1.0:
-                # Uses script_score, normalize from [1.0, 2.0] to [0, 1]
-                rulebook_confidence = max(0, min(1, (rulebook_confidence - 1.0)))
-            # else: already normalized by hybrid merge (0-1), keep as-is
+        # Normalize rulebook scores (hybrid search)
+        if rulebook_results and rulebook_confidence > 1.0:
+            # If using script_score format, normalize from [1.0, 2.0] to [0, 1]
+            rulebook_confidence = max(0, min(1, (rulebook_confidence - 1.0)))
+        # else: already in [0, 1] range from hybrid normalization
         
         # Apply source weights
         forum_weighted = forum_confidence * forum_weight

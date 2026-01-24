@@ -68,29 +68,32 @@ def main(args):
         # Choose search mode: dual-source or single-source
         if args.use_dual_source:
             # Use dual-source search (forum + rulebook)
-            search_result = retriever.search_dual_source(
+            # Returns: (chunks, source, forum_confidence, rulebook_confidence, related_forum_question)
+            chunks, answer_source, forum_conf, rulebook_conf, related_forum_q = retriever.search_dual_source(
                 question,
                 top_k=25,
-                forum_weight=args.forum_weight
+                forum_weight=args.forum_weight,
+                use_semantic=args.use_semantic_analysis
             )
             
-            if search_result['source'] == 'none':
+            if answer_source == 'none' or not chunks:
                 # No relevant chunks found - record failure
                 results.append((question, ground_truth, "No chunks found", 0, None, None, None, None, 'none', None, None, None, None, 'none', 0, 0))
                 continue
             
-            # Get answer and metadata from dual-source result
-            predicted_answer = search_result['answer']
-            answer_source = search_result['source']
-            source_confidence = search_result['confidence']
-            forum_conf = search_result.get('forum_confidence', 0)
-            rulebook_conf = search_result.get('rulebook_confidence', 0)
-            
-            # For compatibility, extract chunks for diagnostic
+            # Generate answer from chunks based on source
             if answer_source == 'forum':
-                retrieved_chunks = search_result.get('all_forum', [])
+                # For forum, use the answer field from top chunk
+                predicted_answer = chunks[0].get('answer', 'No answer found.')
             else:
-                retrieved_chunks = search_result.get('all_rulebook', [])
+                # For rulebook, generate answer from chunks
+                predicted_answer = retriever.generate_answer(question, chunks, use_semantic=args.use_semantic_analysis)
+            
+            # Set source confidence
+            source_confidence = forum_conf if answer_source == 'forum' else rulebook_conf
+            
+            # For compatibility, use chunks as retrieved_chunks
+            retrieved_chunks = chunks
         else:
             # Use traditional single-source search (rulebook only)
             retrieved_chunks = retriever.search(
