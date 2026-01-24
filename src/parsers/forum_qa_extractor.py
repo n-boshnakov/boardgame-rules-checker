@@ -17,6 +17,34 @@ logger = logging.getLogger(__name__)
 class QuoteDetector:
     """Detects and removes quoted text in answers."""
     
+    def __init__(self):
+        """Initialize QuoteDetector with AnswerCleaner instance."""
+        self.answer_cleaner = AnswerCleaner()
+    
+    def detect_concatenated_quotes(self, text: str) -> str:
+        """
+        Detect when multiple users' responses are concatenated.
+        Extract only the final (most direct) response.
+        
+        Pattern: User1@username1...User2@username2...actual answer
+        """
+        # Find all @mentions positions
+        mentions = list(re.finditer(r'@\w+', text))
+        
+        if len(mentions) >= 2:
+            # Multiple mentions = likely chain of quotes
+            # Take text AFTER the last mention
+            last_mention_end = mentions[-1].end()
+            
+            # Extract text after last mention
+            direct_answer = text[last_mention_end:].strip()
+            
+            # If it's substantial, use it; otherwise use original
+            if len(direct_answer) >= 50:
+                return direct_answer
+        
+        return text
+    
     def detect_and_score_quotes(self, answer: str, question: str) -> Tuple[str, int]:
         """
         Remove quoted text and return bonus score for direct responses.
@@ -50,6 +78,35 @@ class QuoteDetector:
             bonus += 2
         
         return cleaned.strip(), bonus
+    
+    def clean_answer_comprehensive(self, text: str, question: str = '') -> str:
+        """
+        Comprehensive cleaning pipeline for answer text.
+        
+        Steps:
+        1. Remove concatenated quotes
+        2. Remove @mentions
+        3. Detect and remove leading question quotes
+        4. Clean conversational elements
+        5. Truncate if too long
+        """
+        # 1. Remove concatenated quotes
+        text = self.detect_concatenated_quotes(text)
+        
+        # 2. Remove @mentions
+        text = self.answer_cleaner.remove_mentions(text)
+        
+        # 3. Detect and remove leading question quotes
+        if question:
+            text, _ = self.detect_and_score_quotes(text, question)
+        
+        # 4. Clean conversational elements
+        text = self.answer_cleaner.clean_answer(text)
+        
+        # 5. Truncate if too long
+        text = self.answer_cleaner.truncate_long_answer(text)
+        
+        return text
     
     def _normalize_for_matching(self, text: str) -> str:
         """Normalize text for similarity comparison."""
@@ -121,9 +178,75 @@ class AnswerCleaner:
         r'\s+(Let me know if you have questions?)[.,!]*$',
     ]
     
+    # Patterns for @mention removal (BGG forum format)
+    MENTION_PATTERNS = [
+        # BGG format: FirstName LastName@username (flexible case)
+        r'\b[A-Z][a-z]+\s+[A-Z][a-z]*@\w+\s*',
+        # Lowercase variants: jim tullis@jimtullis
+        r'\b[a-z]+\s+[a-z]+@\w+\s*',
+        # Standalone @username at start or after punctuation
+        r'(?:^|[.!?]\s+)@\w+\s*',
+        # Quote format: @username says/wrote/mentioned
+        r'@\w+\s+(?:says?|wrote|mentioned):\s*',
+    ]
+    
+    MAX_ANSWER_LENGTH = 500  # Maximum characters for answers
+    MIN_USEFUL_LENGTH = 50   # Minimum useful content
+    
     def __init__(self):
         self.prefix_regex = [re.compile(p, re.IGNORECASE) for p in self.CONVERSATIONAL_PREFIXES]
         self.suffix_regex = [re.compile(p, re.IGNORECASE) for p in self.CONVERSATIONAL_SUFFIXES]
+        self.mention_regex = [re.compile(p) for p in self.MENTION_PATTERNS]
+    
+    def remove_mentions(self, text: str) -> str:
+        """Remove all @username mentions and quote attributions."""
+        cleaned = text
+        
+        for pattern in self.mention_regex:
+            cleaned = pattern.sub('', cleaned)
+        
+        # Clean up extra whitespace after removal
+        cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+        
+        return cleaned.strip()
+    
+    def truncate_long_answer(self, text: str, max_length: int = None) -> str:
+        """
+        Intelligently truncate overly long answers to most useful part.
+        
+        Strategy:
+        1. If under max_length, return as-is
+        2. Split into sentences
+        3. Take first N sentences that fit within max_length
+        4. Ensure ends with complete sentence
+        """
+        if max_length is None:
+            max_length = self.MAX_ANSWER_LENGTH
+        
+        if len(text) <= max_length:
+            return text
+        
+        # Split into sentences
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        
+        # Build truncated version
+        result = []
+        current_length = 0
+        
+        for sentence in sentences:
+            if current_length + len(sentence) <= max_length:
+                result.append(sentence)
+                current_length += len(sentence) + 1  # +1 for space
+            else:
+                break
+        
+        # If we got at least MIN_USEFUL_LENGTH, return it
+        truncated = ' '.join(result)
+        if len(truncated) >= self.MIN_USEFUL_LENGTH:
+            return truncated
+        
+        # Otherwise, hard truncate at max_length with ellipsis
+        return text[:max_length-3] + '...'
     
     def clean_answer(self, answer_text: str) -> str:
         """Clean answer text while preserving factual content."""
@@ -167,14 +290,39 @@ class AnswerRanker:
         r'(?:you (?:can|should|must|need)|it (?:says|states))',  # Instructions
     ]
     
+    # Phase 3: Speculative/uncertain answer patterns
+    SPECULATIVE_PATTERNS = [
+        r"I don't know",
+        r"I'm not sure",
+        r"I think maybe",
+        r"\bprobably\b",
+        r"I guess",
+        r"not certain",
+        r"can't remember",
+        r"unsure",
+        r"unclear",
+    ]
+    
+    # Phase 3: Definitive language patterns (indicates confident, factual answers)
+    DEFINITIVE_PATTERNS = [
+        r'\byes\b', r'\bno\b',
+        r'\bcorrect\b', r'\bincorrect\b',
+        r'\bmust\b', r'\bcannot\b',
+        r'\balways\b', r'\bnever\b',
+        r'\bexactly\b', r'\bdefinitely\b',
+    ]
+    
     def __init__(self):
         self.acknowledgment_regex = [re.compile(p, re.IGNORECASE) for p in self.ACKNOWLEDGMENT_PATTERNS]
         self.useful_regex = [re.compile(p, re.IGNORECASE) for p in self.USEFUL_PATTERNS]
+        # Phase 3: Compile speculative and definitive patterns
+        self.speculative_regex = [re.compile(p, re.IGNORECASE) for p in self.SPECULATIVE_PATTERNS]
+        self.definitive_regex = [re.compile(p, re.IGNORECASE) for p in self.DEFINITIVE_PATTERNS]
         self.quote_detector = QuoteDetector()
         self.answer_cleaner = AnswerCleaner()
     
     def score_answer(self, post: Dict, is_original_poster: bool = False, question_text: str = '') -> Tuple[int, str]:
-        """Score an answer and return cleaned content."""
+        """Score an answer and return cleaned content with Phase 3 improvements."""
         content = post.get('content', '').strip()
         score = 0
         
@@ -187,28 +335,41 @@ class AnswerRanker:
             if pattern.match(content):
                 return 0, content
         
-        # Detect and remove quoted questions, get bonus for direct responses
-        quote_bonus = 0
+        # Use comprehensive cleaning pipeline (Phase 1 improvement)
         if question_text:
-            content, quote_bonus = self.quote_detector.detect_and_score_quotes(content, question_text)
-            score += quote_bonus
-        
-        # Clean conversational elements
-        content = self.answer_cleaner.clean_answer(content)
+            content = self.quote_detector.clean_answer_comprehensive(content, question_text)
+            # Award bonus for successful cleaning/direct response
+            score += 2
+        else:
+            # Fallback to basic cleaning
+            content = self.quote_detector.detect_concatenated_quotes(content)
+            content = self.answer_cleaner.remove_mentions(content)
+            content = self.answer_cleaner.clean_answer(content)
+            content = self.answer_cleaner.truncate_long_answer(content)
         
         # Recheck length after cleaning
         if len(content) < 15:
             return max(0, score), content
         
-        # Length scoring
-        if len(content) > 50:
-            score += 2
-        if len(content) > 150:
-            score += 2
-        if len(content) > 300:
-            score += 1
+        # === PHASE 3: IMPROVED LENGTH SCORING ===
+        length = len(content)
         
-        # Useful content indicators
+        if 50 <= length <= 200:
+            # Sweet spot: concise and complete
+            score += 4
+        elif 200 < length <= 400:
+            # Good length
+            score += 3
+        elif 400 < length <= 600:
+            # Getting long, but still acceptable
+            score += 1
+        elif length > 600:
+            # Too long, likely concatenated or off-topic
+            score -= 2
+        
+        # === PHASE 3: SPECIFICITY SCORING ===
+        
+        # Useful content indicators (page refs, rulebook mentions)
         for pattern in self.useful_regex:
             if pattern.search(content):
                 score += 3
@@ -218,9 +379,38 @@ class AnswerRanker:
         if re.search(r'\b\d+\b', content):  # Contains numbers
             score += 1
         
+        # Phase 3: Definitive language bonus
+        has_definitive = False
+        for pattern in self.definitive_regex:
+            if pattern.search(content):
+                score += 2
+                has_definitive = True
+                break
+        
+        # === PHASE 3: UNCERTAINTY PENALTIES ===
+        
+        # Speculative language detection
+        for pattern in self.speculative_regex:
+            if pattern.search(content):
+                score -= 3
+                break
+        
+        # Multiple question marks (uncertainty/follow-up questions)
+        question_marks = content.count('?')
+        if question_marks > 2:
+            score -= 3
+        elif question_marks > 0:
+            score -= 1
+        
+        # === OTHER PENALTIES ===
+        
         # Penalize if original poster (usually follow-ups, not answers)
         if is_original_poster:
             score -= 2
+        
+        # Starts with uncertain phrases
+        if re.match(r'^(I think|Maybe|Perhaps)', content, re.IGNORECASE):
+            score -= 1
         
         # Check for question marks (probably asking follow-up)
         question_marks = content.count('?')
@@ -262,6 +452,9 @@ class QuestionExtractor:
     # Question word indicators
     QUESTION_WORDS = ['how', 'what', 'when', 'where', 'why', 'who', 'which', 'can', 'should', 'does', 'is', 'are']
     
+    # Phase 2: Maximum reasonable question length
+    MAX_QUESTION_LENGTH = 150
+    
     def __init__(self):
         self.greeting_regex = [re.compile(p, re.IGNORECASE) for p in self.GREETING_PATTERNS]
     
@@ -280,6 +473,25 @@ class QuestionExtractor:
         
         return False
     
+    def ensure_question_mark(self, text: str) -> str:
+        """Ensure question ends with '?' if it's clearly a question (Phase 2)."""
+        text = text.strip()
+        
+        # Already has "?"
+        if text.endswith('?'):
+            return text
+        
+        # Check if it's clearly a question (starts with question word)
+        first_word = text.split()[0].lower() if text.split() else ''
+        if first_word in self.QUESTION_WORDS:
+            return text + '?'
+        
+        # Has question words in middle (like "can you", "should I")
+        if any(f' {word} ' in text.lower() for word in ['can', 'should', 'could', 'would', 'does', 'do']):
+            return text + '?'
+        
+        return text
+    
     def clean_question(self, text: str) -> str:
         """Remove greetings and unnecessary text from question."""
         # Remove greetings
@@ -294,6 +506,43 @@ class QuestionExtractor:
             text = text[0].upper() + text[1:]
         
         return text.strip()
+    
+    def extract_core_question(self, long_title: str) -> Optional[str]:
+        """
+        Extract core question from overly long title (Phase 2).
+        
+        Strategy:
+        - Find first sentence with "?"
+        - Or find first clause starting with question word
+        - Or take first N words (smart truncation)
+        """
+        # Find first sentence with "?"
+        sentences = re.split(r'(?<=[.!?])\s+', long_title)
+        for sentence in sentences:
+            if '?' in sentence and len(sentence) < self.MAX_QUESTION_LENGTH:
+                return sentence
+        
+        # Find first clause with question word
+        clauses = long_title.split(',')
+        for clause in clauses:
+            clause_clean = clause.strip()
+            first_word = clause_clean.split()[0].lower() if clause_clean.split() else ''
+            if first_word in self.QUESTION_WORDS and len(clause_clean) < self.MAX_QUESTION_LENGTH:
+                # Ensure it ends with "?"
+                return self.ensure_question_mark(clause_clean)
+        
+        # Smart truncation: Take first MAX_QUESTION_LENGTH chars at word boundary
+        if len(long_title) > self.MAX_QUESTION_LENGTH:
+            truncated = long_title[:self.MAX_QUESTION_LENGTH]
+            # Find last space
+            last_space = truncated.rfind(' ')
+            if last_space > 50:  # Ensure we keep meaningful content
+                truncated = truncated[:last_space]
+            
+            # Add "?" if missing
+            return self.ensure_question_mark(truncated)
+        
+        return long_title
     
     def split_multiple_questions(self, text: str) -> List[str]:
         """Split text into separate questions if multiple exist."""
@@ -319,7 +568,7 @@ class QuestionExtractor:
         return questions if questions else [text]
     
     def extract_question(self, thread: Dict) -> Optional[str]:
-        """Extract question from thread title and first post, merging if needed."""
+        """Extract question from thread title and first post with Phase 2 improvements."""
         title = thread.get('title', '').strip()
         posts = thread.get('posts', [])
         content = posts[0].get('content', '').strip() if posts else ''
@@ -327,18 +576,43 @@ class QuestionExtractor:
         # Clean the title
         cleaned_title = self.clean_question(title)
         
-        # Check if title is complete (has ?, or is long and descriptive)
+        # Phase 2: Strategy 1 - Short, complete title with "?" - use as-is
+        if '?' in cleaned_title and len(cleaned_title) < self.MAX_QUESTION_LENGTH:
+            return cleaned_title
+        
+        # Phase 2: Strategy 2 - Long title without "?" - extract core question
+        if len(cleaned_title) > self.MAX_QUESTION_LENGTH:
+            core_question = self.extract_core_question(cleaned_title)
+            if core_question and len(core_question) > 10:
+                return core_question
+        
+        # Phase 2: Strategy 3 - Title is topic, content has actual question
+        if content and ':' in cleaned_title:
+            # Title is likely "Topic: Description" format
+            # Look for question in content
+            content_questions = self.split_multiple_questions(content)
+            if content_questions:
+                # Merge topic with first question if short
+                topic = cleaned_title.split(':')[0].strip()
+                first_q = content_questions[0]
+                
+                if len(topic) < 30 and len(first_q) < 100:
+                    return f"{topic}: {first_q}"
+                else:
+                    return first_q
+        
+        # Strategy 4: Title is complete and good - use it
         title_is_complete = (
             '?' in cleaned_title or 
             len(cleaned_title) > 80 or
             (len(cleaned_title) > 40 and not content)
         )
         
-        # Strategy 1: Title is complete and good - use it
         if title_is_complete and len(cleaned_title) > 10:
-            return cleaned_title
+            # Phase 2: Ensure question mark if it looks like a question
+            return self.ensure_question_mark(cleaned_title)
         
-        # Strategy 2: Title is incomplete - merge with content
+        # Strategy 5: Title is incomplete - merge with content
         if not title_is_complete and content:
             # Check if content starts with similar text to title (avoid duplication)
             content_lower = content.lower()[:100]
@@ -349,7 +623,7 @@ class QuestionExtractor:
                 # Content includes title, extract question from content
                 questions = self.split_multiple_questions(content)
                 if questions:
-                    return questions[0]  # Return first question
+                    return self.ensure_question_mark(questions[0])
             else:
                 # Title is a fragment - merge with content
                 # Look for first question in content to append
@@ -358,22 +632,39 @@ class QuestionExtractor:
                     cleaned_sent = self.clean_question(sentence)
                     if self.is_question(cleaned_sent) and len(cleaned_sent) > 10:
                         # Merge: "Title: Question from content?"
-                        return f"{cleaned_title}: {cleaned_sent}"
+                        merged = f"{cleaned_title}: {cleaned_sent}"
+                        merged = self.ensure_question_mark(merged)
+                        
+                        # Phase 2: Truncate if too long
+                        if len(merged) > self.MAX_QUESTION_LENGTH:
+                            merged = self.extract_core_question(merged) or merged[:self.MAX_QUESTION_LENGTH] + '?'
+                        
+                        return merged
                 
                 # No clear question in content, combine title with first sentence
                 if sentences and len(sentences) > 0:
                     first_sentence = self.clean_question(sentences[0])
                     if len(first_sentence) > 10:
-                        return f"{cleaned_title}: {first_sentence}"
+                        merged = f"{cleaned_title}: {first_sentence}"
+                        merged = self.ensure_question_mark(merged)
+                        
+                        # Phase 2: Truncate if too long
+                        if len(merged) > self.MAX_QUESTION_LENGTH:
+                            merged = self.extract_core_question(merged) or merged[:self.MAX_QUESTION_LENGTH] + '?'
+                        
+                        return merged
         
-        # Strategy 3: Try to find question in content only
+        # Strategy 6: Try to find question in content only
         if content:
             questions = self.split_multiple_questions(content)
             if questions:
-                return questions[0]
+                return self.ensure_question_mark(questions[0])
         
-        # Fallback to cleaned title
-        return cleaned_title if cleaned_title else None
+        # Fallback to cleaned title with question mark
+        if cleaned_title:
+            return self.ensure_question_mark(cleaned_title)
+        
+        return None
     
     def extract_all_questions(self, thread: Dict) -> List[str]:
         """Extract all questions from thread (for multi-question posts)."""
