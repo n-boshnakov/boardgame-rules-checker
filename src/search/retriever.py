@@ -376,17 +376,19 @@ class RulebookRetriever:
         if forum_weighted > rulebook_weighted:
             # Forum has higher weighted score - use it
             print(f"[DualSearch] Selected: Forum (weighted {forum_weighted:.3f} > {rulebook_weighted:.3f})")
-            return forum_results, "forum", forum_confidence, rulebook_confidence
+            return forum_results, "forum", forum_confidence, rulebook_confidence, None
         elif rulebook_results:
             # Rulebook has higher or equal weighted score - use it
             print(f"[DualSearch] Selected: Rulebook (weighted {rulebook_weighted:.3f} >= {forum_weighted:.3f})")
-            return rulebook_results, "rulebook", forum_confidence, rulebook_confidence
+            # Include top forum question for reference when rulebook is selected
+            related_forum_question = forum_results[0].get('text') if forum_results else None
+            return rulebook_results, "rulebook", forum_confidence, rulebook_confidence, related_forum_question
         elif forum_results:
             # Only forum has results
             print(f"[DualSearch] Selected: Forum (only source available)")
-            return forum_results, "forum", forum_confidence, rulebook_confidence
+            return forum_results, "forum", forum_confidence, rulebook_confidence, None
         else:
-            return [], "none", 0.0, 0.0
+            return [], "none", 0.0, 0.0, None
 
     def generate_answer(self, question: str, chunks: List[Dict], use_semantic: bool = None) -> str:
         """Generate answer by concatenating top relevant chunks (extractive method).

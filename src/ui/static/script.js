@@ -110,6 +110,13 @@ function displayAnswer(data) {
         document.getElementById('forum-metadata').style.display = 'none';
     }
     
+    // Related forum question (shown when rulebook is selected in dual-source)
+    if (data.related_forum_question && data.source === 'rulebook') {
+        displayRelatedForumQuestion(data.related_forum_question);
+    } else {
+        document.getElementById('related-forum-question').style.display = 'none';
+    }
+    
     // Debug information
     debugTime.textContent = data.processing_time;
     debugChunksCount.textContent = data.chunks_retrieved;
@@ -118,6 +125,16 @@ function displayAnswer(data) {
     const debugDualSource = document.getElementById('debug-dual-source');
     if (debugDualSource) {
         debugDualSource.textContent = data.dual_source_used ? 'Enabled' : 'Disabled';
+    }
+    
+    // Related forum question in debug (if available)
+    const debugRelatedQuestionItem = document.getElementById('debug-related-question-item');
+    const debugRelatedQuestion = document.getElementById('debug-related-question');
+    if (data.related_forum_question && data.source === 'rulebook') {
+        debugRelatedQuestion.textContent = data.related_forum_question;
+        debugRelatedQuestionItem.style.display = 'block';
+    } else {
+        debugRelatedQuestionItem.style.display = 'none';
     }
     
     // Confidence bars (if dual-source)
@@ -220,11 +237,11 @@ function displayChunks(chunks) {
         meta.className = 'chunk-meta';
         
         if (chunk.source_type === 'forum') {
-            // Forum chunk: show answered_by and link
+            // Forum chunk: show original question, answered_by and link
+            const originalQuestion = chunk.original_question || 'N/A';
             const answerBy = chunk.answered_by || 'Unknown';
             const threadUrl = chunk.thread_url || '#';
-            const qualityScore = chunk.quality_score || 'N/A';
-            meta.innerHTML = `<strong>Answered by:</strong> ${answerBy} | <strong>Quality:</strong> ${qualityScore}/10 | <a href="${threadUrl}" target="_blank">View Thread</a>`;
+            meta.innerHTML = `<strong>Original Question:</strong> <em>${originalQuestion}</em><br><strong>Answered by:</strong> ${answerBy} | <a href="${threadUrl}" target="_blank">View Thread</a>`;
         } else {
             // Rulebook chunk: show page and section
             meta.textContent = `Page: ${chunk.page || 'N/A'} | Section: ${chunk.section}`;
@@ -366,15 +383,12 @@ function showError(message) {
 // Display forum metadata
 function displayForumMetadata(metadata) {
     const section = document.getElementById('forum-metadata');
-    const qualityEl = document.getElementById('forum-quality');
+    const threadQuestionEl = document.getElementById('forum-thread-question');
     const userEl = document.getElementById('forum-user');
     const urlEl = document.getElementById('forum-url');
     
-    if (metadata.quality_score) {
-        qualityEl.textContent = metadata.quality_score;
-    } else {
-        qualityEl.textContent = 'N/A';
-    }
+    // Display thread question
+    threadQuestionEl.textContent = metadata.thread_question || 'N/A';
     
     userEl.textContent = metadata.answer_user || 'Unknown';
     
@@ -385,6 +399,15 @@ function displayForumMetadata(metadata) {
         urlEl.style.display = 'none';
     }
     
+    section.style.display = 'block';
+}
+
+// Display related forum question (when rulebook is selected)
+function displayRelatedForumQuestion(question) {
+    const section = document.getElementById('related-forum-question');
+    const textEl = document.getElementById('related-question-text');
+    
+    textEl.textContent = question;
     section.style.display = 'block';
 }
 

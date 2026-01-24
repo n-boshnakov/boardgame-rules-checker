@@ -138,7 +138,7 @@ def ask_question():
         if use_dual_source:
             # Dual-source search: search both forum and rulebook
             print(f"[UI] Using dual-source search (forum_weight={forum_weight})")
-            chunks, answer_source, forum_conf, rulebook_conf = retriever.search_dual_source(
+            chunks, answer_source, forum_conf, rulebook_conf, related_forum_q = retriever.search_dual_source(
                 query=question,
                 top_k=25,
                 forum_weight=forum_weight,
@@ -162,8 +162,13 @@ def ask_question():
                     "thread_id": top_chunk.get('thread_id'),
                     "url": top_chunk.get('url'),
                     "answer_user": top_chunk.get('answer_user'),
-                    "quality_score": quality_score
+                    "quality_score": quality_score,
+                    "thread_question": top_chunk.get('text', '')  # Original forum question
                 }
+            # Store related forum question if rulebook was selected
+            elif answer_source == "rulebook" and related_forum_q:
+                related_forum_question = related_forum_q
+                print(f"[UI] Related forum question: {related_forum_q[:100]}...")
         else:
             # Standard hybrid search (rulebook only)
             # Filter to only search rulebook chunks (exclude forum)
@@ -230,6 +235,11 @@ def ask_question():
             # For forum chunks, show question + answer snippet in debug
             if chunk.get('source_type') == 'forum':
                 text_preview = f"Q: {chunk.get('text', '')}\nA: {chunk.get('answer', '')[:200]}..."
+                # Validate quality score for forum chunks
+                quality_score = chunk.get('forum_quality_score', 'N/A')
+                if quality_score != 'N/A' and quality_score is not None:
+                    quality_score = int(round(float(quality_score)))
+                    quality_score = max(1, min(10, quality_score))
                 # For forum chunks, show answer_user and url instead of page/section
                 chunk_details.append({
                     "rank": i + 1,
@@ -237,7 +247,8 @@ def ask_question():
                     "score": chunk.get('score', 0.0),
                     "answered_by": chunk.get('answer_user', 'Unknown'),
                     "thread_url": chunk.get('url', ''),
-                    "quality_score": chunk.get('forum_quality_score', 'N/A'),
+                    "quality_score": quality_score,
+                    "original_question": chunk.get('text', ''),  # Original forum question
                     "hybrid_breakdown": chunk.get('hybrid_breakdown', {}),
                     "source_type": 'forum'
                 })
@@ -286,6 +297,9 @@ def ask_question():
             response_data["rulebook_confidence"] = round(rulebook_confidence, 2)
             if forum_metadata:
                 response_data["forum_metadata"] = forum_metadata
+            # Add related forum question when rulebook is selected
+            if answer_source == "rulebook" and related_forum_question:
+                response_data["related_forum_question"] = related_forum_question
         
         # Add semantic debug info if available
         if semantic_debug:

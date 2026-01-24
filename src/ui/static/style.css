@@ -342,6 +342,42 @@ button:disabled {
     text-decoration: underline;
 }
 
+/* Related forum question section (shown when rulebook is selected) */
+.related-forum-question {
+    background: linear-gradient(135deg, #fff9e6, #ffecb3);
+    border-left: 4px solid #FFA726;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 25px;
+}
+
+.related-forum-question h4 {
+    color: #F57C00;
+    margin-bottom: 15px;
+    font-size: 1.1em;
+}
+
+.forum-question-box {
+    font-size: 0.95em;
+    color: #424242;
+}
+
+.forum-question-box strong {
+    color: #E65100;
+    font-weight: 600;
+    display: block;
+    margin-bottom: 8px;
+}
+
+.forum-question-box p {
+    margin: 0;
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.7);
+    border-radius: 6px;
+    font-style: italic;
+    line-height: 1.5;
+}
+
 /* Confidence bars for dual-source comparison */
 #confidence-bars {
     margin-top: 20px;

@@ -69,7 +69,7 @@
                     <h4>💬 Forum Thread Information</h4>
                     <div class="forum-details">
                         <div class="forum-item">
-                            <strong>Quality Score:</strong> <span id="forum-quality">-</span>/10
+                            <strong>Thread Question:</strong> <span id="forum-thread-question" style="font-style: italic;">-</span>
                         </div>
                         <div class="forum-item">
                             <strong>Answered by:</strong> <span id="forum-user">-</span>
@@ -77,6 +77,14 @@
                         <div class="forum-item">
                             <strong>Thread:</strong> <a id="forum-url" href="#" target="_blank">View on BoardGameGeek</a>
                         </div>
+                    </div>
+                </div>
+
+                <div id="related-forum-question" class="related-forum-question" style="display: none;">
+                    <h4>💡 Related Forum Discussion</h4>
+                    <div class="forum-question-box">
+                        <strong>Similar question asked by community:</strong>
+                        <p id="related-question-text"></p>
                     </div>
                 </div>
 
@@ -101,6 +109,9 @@
                         </div>
                         <div class="debug-item">
                             <strong>Dual-Source Search:</strong> <span id="debug-dual-source">-</span>
+                        </div>
+                        <div class="debug-item" id="debug-related-question-item" style="display: none;">
+                            <strong>Related Forum Question:</strong> <span id="debug-related-question" style="font-style: italic; color: #666;">-</span>
                         </div>
                         
                         <div id="confidence-bars" style="display: none;">
