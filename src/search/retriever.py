@@ -302,7 +302,7 @@ class RulebookRetriever:
 
         return combined
     
-    def search_dual_source(self, query: str, top_k: int = 5, forum_weight: float = 0.5, use_semantic: bool = None) -> tuple:
+    def search_dual_source(self, query: str, top_k: int = 5, forum_weight: float = 0.45, use_semantic: bool = None) -> tuple:
         """Search both forum Q&A and rulebook, returning best source.
         
         Args:

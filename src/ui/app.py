@@ -232,9 +232,15 @@ def ask_question():
         # Prepare chunk details for debug info (top 5)
         chunk_details = []
         for i, chunk in enumerate(chunks[:5]):
-            # For forum chunks, show question + answer snippet in debug
+            # For forum chunks, show answer snippet in debug
             if chunk.get('source_type') == 'forum':
-                text_preview = f"Q: {chunk.get('text', '')}\nA: {chunk.get('answer', '')[:200]}..."
+                answer_preview = chunk.get('answer', '')[:200]
+                # Normalize forum score if needed (cosine similarity + 1.0 → [0,1])
+                raw_score = chunk.get('score', 0.0)
+                if raw_score > 1.0:
+                    norm_score = max(0.0, min(1.0, raw_score - 1.0))
+                else:
+                    norm_score = raw_score
                 # Validate quality score for forum chunks
                 quality_score = chunk.get('forum_quality_score', 'N/A')
                 if quality_score != 'N/A' and quality_score is not None:
@@ -243,8 +249,8 @@ def ask_question():
                 # For forum chunks, show answer_user and url instead of page/section
                 chunk_details.append({
                     "rank": i + 1,
-                    "text": text_preview,
-                    "score": chunk.get('score', 0.0),
+                    "text": answer_preview,
+                    "score": norm_score,
                     "answered_by": chunk.get('answer_user', 'Unknown'),
                     "thread_url": chunk.get('url', ''),
                     "quality_score": quality_score,

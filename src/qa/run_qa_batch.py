@@ -130,9 +130,6 @@ def main(args):
                     break
         except Exception:
             pass  # Silently continue if diagnostic fails
-
-        # Generate answer from retrieved chunks
-        predicted_answer = retriever.generate_answer(question, retrieved_chunks, use_semantic=use_semantic)
         
         # Convert ground_truth to string, handle NaN/None
         gt_string = str(ground_truth) if ground_truth and str(ground_truth) != 'nan' else None
