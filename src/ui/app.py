@@ -119,6 +119,9 @@ def ask_question():
                 # Extract query words (cleaned)
                 query_words = list(set(word.strip(string.punctuation) for word in question.lower().split()))
                 
+                # Extract entities from query
+                query_entities = retriever.semantic_analyzer.extract_game_entities(question)
+                
                 semantic_debug = {
                     "original_query": question,
                     "enhanced_query": enhanced_query,
@@ -128,7 +131,8 @@ def ask_question():
                     "key_nouns": analysis.get('key_nouns', []),
                     "action_verbs": analysis.get('action_verbs', []),
                     "game_concepts": analysis.get('game_concepts', []),
-                    "domain_keywords": domain_keywords
+                    "domain_keywords": domain_keywords,
+                    "extracted_entities": query_entities
                 }
                 
                 print(f"[UI] Enhanced query: {enhanced_query}")
@@ -265,6 +269,8 @@ def ask_question():
                     "quality_score": quality_score,
                     "original_question": chunk.get('text', ''),  # Original forum question
                     "hybrid_breakdown": chunk.get('hybrid_breakdown', {}),
+                    "entity_matches": chunk.get('entity_matches', 0),
+                    "matched_entity_types": chunk.get('matched_entity_types', []),
                     "source_type": 'forum'
                 })
             else:
@@ -276,6 +282,8 @@ def ask_question():
                     "page": chunk.get('page'),
                     "section": chunk.get('section', 'Unknown'),
                     "hybrid_breakdown": chunk.get('hybrid_breakdown', {}),
+                    "entity_matches": chunk.get('entity_matches', 0),
+                    "matched_entity_types": chunk.get('matched_entity_types', []),
                     "source_type": 'rulebook'
                 })
         

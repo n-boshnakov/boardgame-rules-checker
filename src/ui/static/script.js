@@ -234,8 +234,20 @@ function displayChunks(chunks) {
         score.className = 'chunk-score';
         score.textContent = `Score: ${chunk.score.toFixed(4)}`;
         
-        header.appendChild(rank);
-        header.appendChild(score);
+        // Add entity matches if available
+        if (chunk.entity_matches && chunk.entity_matches > 0) {
+            const entityInfo = document.createElement('span');
+            entityInfo.className = 'chunk-entities';
+            entityInfo.style.color = '#28a745';
+            entityInfo.style.fontWeight = 'bold';
+            entityInfo.textContent = `🎯 ${chunk.entity_matches} entities`;
+            header.appendChild(rank);
+            header.appendChild(score);
+            header.appendChild(entityInfo);
+        } else {
+            header.appendChild(rank);
+            header.appendChild(score);
+        }
         
         // Metadata - different for forum vs rulebook chunks
         const meta = document.createElement('div');
@@ -246,10 +258,23 @@ function displayChunks(chunks) {
             const originalQuestion = chunk.original_question || 'N/A';
             const answerBy = chunk.answered_by || 'Unknown';
             const threadUrl = chunk.thread_url || '#';
-            meta.innerHTML = `<strong>Original Question:</strong> <em>${originalQuestion}</em><br><strong>Answered by:</strong> ${answerBy} | <a href="${threadUrl}" target="_blank">View Thread</a>`;
+            let metaContent = `<strong>Original Question:</strong> <em>${originalQuestion}</em><br><strong>Answered by:</strong> ${answerBy} | <a href="${threadUrl}" target="_blank">View Thread</a>`;
+            
+            // Add matched entity types if available
+            if (chunk.matched_entity_types && chunk.matched_entity_types.length > 0) {
+                metaContent += `<br><strong>Matched Entities:</strong> <span style="color: #28a745;">${chunk.matched_entity_types.join(', ')}</span>`;
+            }
+            meta.innerHTML = metaContent;
         } else {
             // Rulebook chunk: show page and section
-            meta.textContent = `Page: ${chunk.page || 'N/A'} | Section: ${chunk.section}`;
+            let metaContent = `Page: ${chunk.page || 'N/A'} | Section: ${chunk.section}`;
+            
+            // Add matched entity types if available
+            if (chunk.matched_entity_types && chunk.matched_entity_types.length > 0) {
+                metaContent += ` | <strong>Matched:</strong> <span style="color: #28a745;">${chunk.matched_entity_types.join(', ')}</span>`;
+            }
+            meta.textContent = '';
+            meta.innerHTML = metaContent;
         }
         
         // Text content
@@ -308,6 +333,20 @@ function displaySemanticDebug(semanticDebug) {
         (semanticDebug.domain_keywords && semanticDebug.domain_keywords.length > 0) 
             ? semanticDebug.domain_keywords.join(', ') 
             : '-';
+    
+    // Format extracted entities
+    const entitiesEl = document.getElementById('semantic-entities');
+    if (semanticDebug.extracted_entities && Object.keys(semanticDebug.extracted_entities).length > 0) {
+        const entityParts = [];
+        for (const [entityType, entities] of Object.entries(semanticDebug.extracted_entities)) {
+            if (entities.length > 0) {
+                entityParts.push(`${entityType}: ${entities.join(', ')}`);
+            }
+        }
+        entitiesEl.textContent = entityParts.length > 0 ? entityParts.join(' | ') : '-';
+    } else {
+        entitiesEl.textContent = '-';
+    }
     
     // Format intent flags
     const intentFlags = semanticDebug.intent_flags || {};

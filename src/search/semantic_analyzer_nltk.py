@@ -77,6 +77,56 @@ class SemanticAnalyzerNLTK:
             for term in terms:
                 self.term_to_concept[term.lower()] = concept
         
+        # Domain-specific Named Entity Recognition
+        # Game entities categorized by type for better semantic understanding
+        self.game_entities = {
+            'CHARACTER': [
+                'stalker', 'borsuk', 'ghost', 'hulyash', 'degtyarev',
+                'snork', 'bloodsucker', 'chimera', 'controller', 'pseudodog',
+                'player', 'character', 'milady'
+            ],
+            'LOCATION': [
+                'zone', 'lost territories', 'mission map', 'map', 'entrance',
+                'exit', 'space', 'area', 'territory', 'region', 'base',
+                'lost territory entrance', 'window', 'windows'
+            ],
+            'WEAPON': [
+                'akm', 'ak', 'knife', 'grenade', 'rifle', 'pistol', 'shotgun',
+                'weapon', 'gun', 'firearm', 'blade', 'axe'
+            ],
+            'ITEM': [
+                'geiger counter', 'detector', 'bolt', 'artifact', 'loot',
+                'ammo', 'ammunition', 'attachment', 'container', 'token',
+                'card', 'equipment', 'gear', 'item', 'dice'
+            ],
+            'MECHANIC': [
+                'line of sight', 'los', 'action point', 'ap', 'turn token',
+                'hp', 'health point', 'wound', 'critical injury',
+                'attention marker', 'attention token', 'focus token',
+                'skill test', 'defense roll', 'attack roll', 'damage',
+                'turn', 'round', 'phase', 'mission', 'objective'
+            ],
+            'STATUS': [
+                'exposed', 'exposed token', 'critical injury', 'wounded',
+                'radiation exposure', 'radiation dosage', 'poisoned',
+                'bleeding', 'stunned', 'pinned', 'dead', 'dies', 'death'
+            ],
+            'ANOMALY': [
+                'anomaly', 'bubble', 'vortex', 'springboard', 'burner',
+                'anomaly symbol', 'anomaly overlay', 'anomalies'
+            ],
+            'ENEMY_TYPE': [
+                'human enemy', 'mutant enemy', 'mutant', 'human',
+                'psionic', 'enemy', 'enemies'
+            ]
+        }
+        
+        # Reverse mapping for fast entity lookup
+        self.entity_lookup = {}
+        for entity_type, terms in self.game_entities.items():
+            for term in terms:
+                self.entity_lookup[term.lower()] = entity_type
+        
         # Question type patterns
         self.question_patterns = {
             'how_many': r'\b(how many|how much|what number)\b',
@@ -101,6 +151,103 @@ class SemanticAnalyzerNLTK:
             return self.wordnet.ADV
         else:
             return self.wordnet.NOUN
+    
+    def extract_game_entities(self, text: str) -> Dict[str, List[str]]:
+        """
+        Extract domain-specific named entities from text.
+        
+        Recognizes game-specific entities like:
+        - Characters (Stalker, Borsuk, Ghost)
+        - Weapons (AKM, knife, grenade)
+        - Mechanics (line of sight, action point, HP)
+        - Locations (Zone, Lost Territories)
+        - Status effects (exposed, wounded, radiation)
+        - Items (detector, bolt, artifact)
+        
+        Returns:
+            Dictionary mapping entity types to lists of found entities.
+        """
+        entities = {
+            'CHARACTER': [],
+            'LOCATION': [],
+            'WEAPON': [],
+            'ITEM': [],
+            'MECHANIC': [],
+            'STATUS': [],
+            'ANOMALY': [],
+            'ENEMY_TYPE': [],
+            'UNKNOWN': []  # Capitalized words not in dictionary
+        }
+        
+        text_lower = text.lower()
+        
+        # Track words that are part of multi-word entities
+        found_entity_words = set()
+        
+        # Extract multi-word entities first (longest match priority)
+        for entity_type, terms in self.game_entities.items():
+            for term in sorted(terms, key=len, reverse=True):
+                if term in text_lower:
+                    # Avoid duplicates
+                    if term not in entities[entity_type]:
+                        entities[entity_type].append(term)
+                        # Track individual words from multi-word entities
+                        for word in term.split():
+                            found_entity_words.add(word.lower())
+                    # Mark as processed to avoid substring matches
+                    text_lower = text_lower.replace(term, ' ' * len(term))
+        
+        # Common words to ignore (not game-specific entities)
+        common_words = {
+            'player', 'players', 'game', 'turn', 'round', 'phase', 'card', 'cards',
+            'dice', 'roll', 'table', 'board', 'piece', 'token', 'marker', 'counter',
+            'rule', 'rules', 'example', 'note', 'tip', 'question', 'answer',
+            'the', 'this', 'that', 'these', 'those', 'it', 'its', 'you', 'your',
+            'what', 'when', 'where', 'who', 'why', 'how', 'can', 'does', 'do', 'is', 'are'
+        }
+        
+        # Extract capitalized words (potential character/location names)
+        caps = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text)
+        for cap in caps:
+            cap_lower = cap.lower()
+            
+            # Skip if word is part of already found multi-word entity
+            if cap_lower in found_entity_words:
+                continue
+            
+            # Skip common words
+            if cap_lower in common_words:
+                continue
+            
+            if cap_lower in self.entity_lookup:
+                entity_type = self.entity_lookup[cap_lower]
+                if cap_lower not in entities[entity_type]:
+                    entities[entity_type].append(cap_lower)
+            else:
+                # Unknown capitalized entity (might be custom name)
+                if cap not in entities['UNKNOWN']:
+                    entities['UNKNOWN'].append(cap)
+        
+        # Extract abbreviations (HP, LoS, AKM, PDA)
+        abbrevs = re.findall(r'\b[A-Z]{2,}\b', text)
+        for abbrev in abbrevs:
+            abbrev_lower = abbrev.lower()
+            
+            # Skip if abbreviation is part of already found entity
+            if abbrev_lower in found_entity_words:
+                continue
+            
+            if abbrev_lower in self.entity_lookup:
+                entity_type = self.entity_lookup[abbrev_lower]
+                if abbrev_lower not in entities[entity_type]:
+                    entities[entity_type].append(abbrev_lower)
+            else:
+                # Unknown abbreviation
+                if abbrev not in entities['UNKNOWN']:
+                    entities['UNKNOWN'].append(abbrev)
+        
+        # Remove empty categories and deduplicate
+        return {k: list(set(v)) for k, v in entities.items() if v}
     
     def analyze(self, text: str) -> Dict:
         """
@@ -161,9 +308,8 @@ class SemanticAnalyzerNLTK:
                         if concept not in result['game_concepts']:
                             result['game_concepts'].append(concept)
             
-            # Extract named entities (capitalized sequences)
-            entities = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text)
-            result['entities'] = list(set(entities))
+            # Extract domain-specific named entities
+            result['entities'] = self.extract_game_entities(text)
             
         except Exception:
             pass
@@ -269,7 +415,7 @@ class SemanticAnalyzerNLTK:
         """
         Extract domain-specific keywords that should be present in the answer.
         These are critical terms that define the question's focus.
-        Now also extracts frequent bigram collocations from the text.
+        Also extracts frequent bigram collocations from the text.
         Returns:
             List of critical keywords (nouns, game-specific terms, collocations)
         """

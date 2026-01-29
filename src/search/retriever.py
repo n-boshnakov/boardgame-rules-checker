@@ -66,6 +66,8 @@ class RulebookRetriever:
     def spellcheck_question(self, question: str) -> Tuple[str, List[Tuple[str, str]]]:
         """Correct spelling mistakes in the question.
         
+        Named entities and unique game terms are protected from correction.
+        
         Args:
             question: The original question text
             
@@ -76,19 +78,61 @@ class RulebookRetriever:
             return question, []
         
         try:
+            # Build set of protected words from unique terms + NER entities
+            protected_words = set()
+            
+            # Load unique terms from CSV
+            if self.unique_terms_path and os.path.exists(self.unique_terms_path):
+                try:
+                    import csv
+                    with open(self.unique_terms_path, 'r', encoding='utf-8') as f:
+                        reader = csv.reader(f)
+                        for row in reader:
+                            if row:
+                                protected_words.add(row[0].lower())
+                except Exception:
+                    pass
+            
+            # Extract entities using NER if available
+            if self.semantic_analyzer:
+                try:
+                    entities = self.semantic_analyzer.extract_game_entities(question)
+                    # Add all found entities to protected set
+                    for entity_type, entity_list in entities.items():
+                        for entity in entity_list:
+                            protected_words.add(entity.lower())
+                            # Also add individual words from multi-word entities
+                            for word in entity.split():
+                                protected_words.add(word.lower())
+                except Exception:
+                    pass
+            
+            # Run spellchecker
             result = self.spellchecker(
                 question,
                 language='en',
-                generate_corrections_file=False,  # Don't save corrections
+                generate_corrections_file=False,
                 unique_terms_file=self.unique_terms_path
             )
             corrected = result.get('corrected_text', question)
-            corrections = [(orig, corr) for orig, corr in result.get('checked_words', []) if orig != corr]
+            all_corrections = result.get('checked_words', [])
             
-            if corrections:
-                print(f"[Retriever] Spellcheck corrections: {corrections}")
+            # Filter out corrections for protected words
+            filtered_corrections = []
+            for orig, corr in all_corrections:
+                if orig != corr and orig.lower() not in protected_words:
+                    filtered_corrections.append((orig, corr))
             
-            return corrected, corrections
+            # Reconstruct corrected text, applying only non-protected corrections
+            if filtered_corrections:
+                import re
+                corrected = question
+                for orig, corr in filtered_corrections:
+                    pattern = r'\b' + re.escape(orig) + r'\b'
+                    corrected = re.sub(pattern, corr, corrected, flags=re.IGNORECASE)
+                print(f"[Retriever] Spellcheck corrections: {filtered_corrections}")
+            
+            return corrected, filtered_corrections
         except Exception as e:
             print(f"[Retriever] Spellcheck error: {e}")
             return question, []
@@ -116,7 +160,7 @@ class RulebookRetriever:
             script_query["script_score"]["query"]["bool"]["filter"] = filters
         return self.es.search(index=ES_INDEX, body={"size": size, "query": script_query})
 
-    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85, use_semantic: bool = None, source_type: Optional[str] = None) -> List[Dict]:
+    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85, use_semantic: bool = None, source_type: Optional[str] = None, skip_entity_boosting: bool = False) -> List[Dict]:
         # Spellcheck the query first
         corrected_query, corrections = self.spellcheck_question(query)
         if corrections:
@@ -299,8 +343,81 @@ class RulebookRetriever:
             
             # Re-sort after boosting
             combined.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        
+        # Apply entity-based score boosting for better semantic matching
+        # Skip if explicitly disabled (e.g., in dual-source mode for rulebook to avoid unfair advantage)
+        if should_use_semantic and self.semantic_analyzer and not skip_entity_boosting:
+            try:
+                self._apply_entity_boosting(query, combined)
+            except Exception as e:
+                print(f"[Retriever] Entity boosting failed: {e}")
 
         return combined
+    
+    def _apply_entity_boosting(self, query: str, chunks: List[Dict]) -> None:
+        """
+        Apply entity-based score boosting to chunks.
+        Boosts chunks that share named entities with the query.
+        
+        Args:
+            query: Original query text
+            chunks: List of chunk dicts to boost (modified in-place)
+        """
+        # Extract entities from query
+        query_entities = self.semantic_analyzer.extract_game_entities(query)
+        
+        # Skip if no entities found in query
+        if not query_entities:
+            return
+        
+        # Calculate total query entities for normalization
+        total_query_entities = sum(len(entities) for entities in query_entities.values())
+        
+        for chunk in chunks:
+            # Extract entities from chunk text
+            chunk_entities = self.semantic_analyzer.extract_game_entities(chunk.get("text", ""))
+            
+            # Calculate entity overlap across all categories (excluding UNKNOWN)
+            entity_overlap = 0
+            matched_categories = []
+            
+            for entity_type, query_ents in query_entities.items():
+                # Skip UNKNOWN entities as they are unreliable
+                if entity_type == 'UNKNOWN':
+                    continue
+                    
+                chunk_ents = chunk_entities.get(entity_type, [])
+                if chunk_ents:
+                    # Count matching entities (case-insensitive)
+                    query_ents_lower = [e.lower() for e in query_ents]
+                    chunk_ents_lower = [e.lower() for e in chunk_ents]
+                    matches = len(set(query_ents_lower) & set(chunk_ents_lower))
+                    
+                    if matches > 0:
+                        entity_overlap += matches
+                        matched_categories.append(entity_type)
+            
+            # Apply boost based on entity overlap
+            # Require minimum 2 entity matches to avoid over-boosting common single entities
+            if entity_overlap >= 2:
+                # 10% boost per matched entity, capped at 20% total boost
+                boost_factor = 1.0 + min(0.20, 0.10 * entity_overlap)
+                original_score = chunk.get("score", 0.0)
+                chunk["score"] = original_score * boost_factor
+                chunk["entity_matches"] = entity_overlap
+                chunk["matched_entity_types"] = matched_categories
+                
+                # Debug info
+                print(f"[EntityBoost] +{(boost_factor-1)*100:.0f}% for {entity_overlap} entities: {matched_categories}")
+            elif entity_overlap > 0:
+                # Store entity info but don't boost for single entity match
+                chunk["entity_matches"] = entity_overlap
+                chunk["matched_entity_types"] = matched_categories
+            else:
+                chunk["entity_matches"] = 0
+        
+        # Re-sort after entity boosting
+        chunks.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     
     def search_dual_source(self, query: str, top_k: int = 5, forum_weight: float = 0.45, use_semantic: bool = None) -> tuple:
         """Search both forum Q&A and rulebook, returning best source.
@@ -337,6 +454,7 @@ class RulebookRetriever:
         )
         
         # Search rulebook with hybrid approach
+        # Disable entity boosting for rulebook to prevent unfair advantage over forum
         print(f"[DualSearch] Searching rulebook...")
         rulebook_results = self.search(
             query,
@@ -344,7 +462,8 @@ class RulebookRetriever:
             search_type="hybrid",
             hybrid_weight=0.85,
             use_semantic=should_use_semantic,
-            source_type="rulebook"  # Filter to rulebook only
+            source_type="rulebook",  # Filter to rulebook only
+            skip_entity_boosting=True  # Disable entity boosting in dual-source mode
         )
         
         # Calculate confidence scores
