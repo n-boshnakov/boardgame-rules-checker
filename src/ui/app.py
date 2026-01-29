@@ -18,6 +18,15 @@ from qa.multi_dimensional_scorer import MultiDimensionalScorer
 
 app = Flask(__name__)
 
+# Disable caching for all responses
+@app.after_request
+def add_no_cache_headers(response):
+    """Add headers to prevent browser caching of responses."""
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
 # Initialize retriever and scorer (reuse across requests)
 print("[UI] Initializing retriever and scorer...")
 print("[UI] This may take 1-2 minutes on first run (downloading models)...")
@@ -33,7 +42,7 @@ print("[UI] Ready to accept requests!")
 GAME_INFO = {
     "name": "S.T.A.L.K.E.R.: The Board Game",
     "description": "A cooperative survival board game set in the Zone",
-    "sources": ["Rulebook"],
+    "sources": ["Rulebook", "BoardGameGeek Forums"],
     "index": "rulebook_chunks"
 }
 
@@ -73,6 +82,8 @@ def ask_question():
         data = request.get_json()
         question = data.get('question', '').strip()
         use_semantic = data.get('use_semantic', False)
+        use_dual_source = data.get('use_dual_source', False)
+        forum_weight = data.get('forum_weight', 0.45)  # Default slightly favors rulebook (0.55)
         
         if not question:
             return jsonify({"error": "Question cannot be empty"}), 400
@@ -80,6 +91,7 @@ def ask_question():
         # Debug logging
         print(f"[UI] Question: {question}")
         print(f"[UI] Semantic analysis requested: {use_semantic}")
+        print(f"[UI] Dual-source search requested: {use_dual_source}")
         
         # Check for spelling corrections
         spellcheck_corrections = []
@@ -107,6 +119,9 @@ def ask_question():
                 # Extract query words (cleaned)
                 query_words = list(set(word.strip(string.punctuation) for word in question.lower().split()))
                 
+                # Extract entities from query
+                query_entities = retriever.semantic_analyzer.extract_game_entities(question)
+                
                 semantic_debug = {
                     "original_query": question,
                     "enhanced_query": enhanced_query,
@@ -116,7 +131,8 @@ def ask_question():
                     "key_nouns": analysis.get('key_nouns', []),
                     "action_verbs": analysis.get('action_verbs', []),
                     "game_concepts": analysis.get('game_concepts', []),
-                    "domain_keywords": domain_keywords
+                    "domain_keywords": domain_keywords,
+                    "extracted_entities": query_entities
                 }
                 
                 print(f"[UI] Enhanced query: {enhanced_query}")
@@ -126,14 +142,57 @@ def ask_question():
                 semantic_debug = {"error": str(e)}
         
         # Retrieve relevant chunks with detailed metadata
-        # Pass use_semantic flag to enable/disable semantic query enhancement
-        chunks = retriever.search(
-            query=question,
-            top_k=25,
-            search_type="hybrid",
-            hybrid_weight=0.85,
-            use_semantic=use_semantic
-        )
+        # Use dual-source search if enabled, otherwise use standard hybrid search
+        answer_source = "rulebook"  # Default
+        forum_confidence = 0.0
+        rulebook_confidence = 0.0
+        forum_metadata = None
+        
+        if use_dual_source:
+            # Dual-source search: search both forum and rulebook
+            print(f"[UI] Using dual-source search (forum_weight={forum_weight})")
+            chunks, answer_source, forum_conf, rulebook_conf, related_forum_q = retriever.search_dual_source(
+                query=question,
+                top_k=25,
+                forum_weight=forum_weight,
+                use_semantic=use_semantic
+            )
+            forum_confidence = forum_conf
+            rulebook_confidence = rulebook_conf
+            print(f"[UI] Source selected: {answer_source}")
+            print(f"[UI] Forum confidence: {forum_confidence:.4f}, Rulebook confidence: {rulebook_confidence:.4f}")
+            
+            # Extract forum metadata if source is forum
+            if answer_source == "forum" and chunks:
+                top_chunk = chunks[0]
+                quality_score = top_chunk.get('forum_quality_score')
+                # Ensure quality score is an integer 1-10, handle None or invalid values
+                if quality_score is not None:
+                    quality_score = int(round(float(quality_score)))
+                    # Clamp to 1-10 range
+                    quality_score = max(1, min(10, quality_score))
+                forum_metadata = {
+                    "thread_id": top_chunk.get('thread_id'),
+                    "url": top_chunk.get('url'),
+                    "answer_user": top_chunk.get('answer_user'),
+                    "quality_score": quality_score,
+                    "thread_question": top_chunk.get('text', '')  # Original forum question
+                }
+            # Store related forum question if rulebook was selected
+            elif answer_source == "rulebook" and related_forum_q:
+                related_forum_question = related_forum_q
+                print(f"[UI] Related forum question: {related_forum_q[:100]}...")
+        else:
+            # Standard hybrid search (rulebook only)
+            # Filter to only search rulebook chunks (exclude forum)
+            chunks = retriever.search(
+                query=question,
+                top_k=25,
+                search_type="hybrid",
+                hybrid_weight=0.85,
+                use_semantic=use_semantic,
+                source_type="rulebook"  # Exclude forum chunks
+            )
         
         print(f"[UI] Retrieved {len(chunks)} chunks")
         if chunks:
@@ -153,11 +212,15 @@ def ask_question():
             })
         
         # Generate answer from chunks
-        # Pass use_semantic flag to enable/disable semantic answer generation
-        answer = retriever.generate_answer(question, chunks, use_semantic=use_semantic)
-        
-        print(f"[UI] Generated answer length: {len(answer)}")
-        print(f"[UI] Answer preview: {answer[:100]}...")
+        # For forum results, extract the answer field directly
+        if answer_source == "forum" and chunks:
+            answer = chunks[0].get('answer', 'No answer found.')
+            print(f"[UI] Extracted forum answer: {answer[:100]}...")
+        else:
+            # For rulebook, generate answer by concatenating relevant chunks
+            answer = retriever.generate_answer(question, chunks, use_semantic=use_semantic)
+            print(f"[UI] Generated rulebook answer length: {len(answer)}")
+            print(f"[UI] Answer preview: {answer[:100]}...")
         
         # Get ground truth (placeholder - in production, this would be optional)
         ground_truth = ""  # Not available in UI mode
@@ -168,23 +231,70 @@ def ask_question():
         # Extract source information from top chunk
         top_chunk = chunks[0]
         source_info = top_chunk.get('source', {})
-        page = source_info.get('page', top_chunk.get('page'))
-        source_type = source_info.get('type', 'rulebook')
+        
+        # For forums, page/section don't exist - handle appropriately
+        if answer_source == "forum":
+            page = None
+            section = None
+        else:
+            page = source_info.get('page', top_chunk.get('page'))
+            section = top_chunk.get('section', 'Unknown')
+        
+        source_type = answer_source if use_dual_source else source_info.get('type', 'rulebook')
         
         # Prepare chunk details for debug info (top 5)
         chunk_details = []
         for i, chunk in enumerate(chunks[:5]):
-            chunk_details.append({
-                "rank": i + 1,
-                "text": chunk.get('text', ''),  # Full text
-                "score": chunk.get('score', 0.0),
-                "page": chunk.get('page'),
-                "section": chunk.get('section', 'Unknown'),
-                "hybrid_breakdown": chunk.get('hybrid_breakdown', {})
-            })
+            # For forum chunks, show answer snippet in debug
+            if chunk.get('source_type') == 'forum':
+                answer_preview = chunk.get('answer', '')[:200]
+                # Normalize forum score if needed (cosine similarity + 1.0 → [0,1])
+                raw_score = chunk.get('score', 0.0)
+                if raw_score > 1.0:
+                    norm_score = max(0.0, min(1.0, raw_score - 1.0))
+                else:
+                    norm_score = raw_score
+                # Validate quality score for forum chunks
+                quality_score = chunk.get('forum_quality_score', 'N/A')
+                if quality_score != 'N/A' and quality_score is not None:
+                    quality_score = int(round(float(quality_score)))
+                    quality_score = max(1, min(10, quality_score))
+                # For forum chunks, show answer_user and url instead of page/section
+                chunk_details.append({
+                    "rank": i + 1,
+                    "text": answer_preview,
+                    "score": norm_score,
+                    "answered_by": chunk.get('answer_user', 'Unknown'),
+                    "thread_url": chunk.get('url', ''),
+                    "quality_score": quality_score,
+                    "original_question": chunk.get('text', ''),  # Original forum question
+                    "hybrid_breakdown": chunk.get('hybrid_breakdown', {}),
+                    "entity_matches": chunk.get('entity_matches', 0),
+                    "matched_entity_types": chunk.get('matched_entity_types', []),
+                    "source_type": 'forum'
+                })
+            else:
+                text_preview = chunk.get('text', '')
+                chunk_details.append({
+                    "rank": i + 1,
+                    "text": text_preview,
+                    "score": chunk.get('score', 0.0),
+                    "page": chunk.get('page'),
+                    "section": chunk.get('section', 'Unknown'),
+                    "hybrid_breakdown": chunk.get('hybrid_breakdown', {}),
+                    "entity_matches": chunk.get('entity_matches', 0),
+                    "matched_entity_types": chunk.get('matched_entity_types', []),
+                    "source_type": 'rulebook'
+                })
         
-        # Calculate overall confidence (weighted average of relevance and completeness)
-        confidence = (scores.get('relevance', 0.5) * 0.6 + scores.get('completeness', 0.5) * 0.4)
+        # Calculate overall confidence using scorer's dimension weights
+        # Current weights: relevance 30%, completeness 25%, accuracy 40%, conciseness 5%
+        confidence = (
+            scores.get('relevance', 0.5) * scorer.weights['relevance'] +
+            scores.get('completeness', 0.5) * scorer.weights['completeness'] +
+            scores.get('accuracy', 0.5) * scorer.weights['accuracy'] +
+            scores.get('conciseness', 0.5) * scorer.weights['conciseness']
+        )
         
         processing_time = time.time() - start_time
         
@@ -200,14 +310,31 @@ def ask_question():
                 "accuracy": round(scores.get('accuracy', 0.0), 2),
                 "conciseness": round(scores.get('conciseness', 0.0), 2)
             },
+            "score_weights": {
+                "relevance": f"{scorer.weights['relevance']*100:.0f}%",
+                "completeness": f"{scorer.weights['completeness']*100:.0f}%",
+                "accuracy": f"{scorer.weights['accuracy']*100:.0f}%",
+                "conciseness": f"{scorer.weights['conciseness']*100:.0f}%"
+            },
             "chunks_retrieved": len(chunks),
             "chunk_details": chunk_details,
             "processing_time": round(processing_time, 2),
             "semantic_analysis_used": use_semantic,
+            "dual_source_used": use_dual_source,
             "spellcheck_corrections": spellcheck_corrections,
             "original_question": original_question if spellcheck_corrections else question,
             "corrected_question": question if spellcheck_corrections else None
         }
+        
+        # Add dual-source specific data if enabled
+        if use_dual_source:
+            response_data["forum_confidence"] = round(forum_confidence, 2)
+            response_data["rulebook_confidence"] = round(rulebook_confidence, 2)
+            if forum_metadata:
+                response_data["forum_metadata"] = forum_metadata
+            # Add related forum question when rulebook is selected
+            if answer_source == "rulebook" and related_forum_question:
+                response_data["related_forum_question"] = related_forum_question
         
         # Add semantic debug info if available
         if semantic_debug:

@@ -105,6 +105,12 @@ textarea:focus {
     margin-top: 15px;
 }
 
+.toggles-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
 .checkbox-label {
     display: flex;
     align-items: center;
@@ -114,6 +120,12 @@ textarea:focus {
 
 .checkbox-label input {
     margin-right: 8px;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
 }
 
 button {
@@ -287,6 +299,133 @@ button:disabled {
     font-size: 1.05em;
     line-height: 1.8;
     white-space: pre-wrap;
+}
+
+/* Forum metadata section */
+.forum-metadata {
+    background: linear-gradient(135deg, #e3f2fd, #bbdefb);
+    border-left: 4px solid #2196F3;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 25px;
+}
+
+.forum-metadata h4 {
+    color: #1976D2;
+    margin-bottom: 15px;
+    font-size: 1.1em;
+}
+
+.forum-details {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.forum-item {
+    font-size: 0.95em;
+    color: #424242;
+}
+
+.forum-item strong {
+    color: #1565C0;
+    font-weight: 600;
+}
+
+.forum-item a {
+    color: #1976D2;
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.forum-item a:hover {
+    text-decoration: underline;
+}
+
+/* Related forum question section (shown when rulebook is selected) */
+.related-forum-question {
+    background: linear-gradient(135deg, #fff9e6, #ffecb3);
+    border-left: 4px solid #FFA726;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 25px;
+}
+
+.related-forum-question h4 {
+    color: #F57C00;
+    margin-bottom: 15px;
+    font-size: 1.1em;
+}
+
+.forum-question-box {
+    font-size: 0.95em;
+    color: #424242;
+}
+
+.forum-question-box strong {
+    color: #E65100;
+    font-weight: 600;
+    display: block;
+    margin-bottom: 8px;
+}
+
+.forum-question-box p {
+    margin: 0;
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.7);
+    border-radius: 6px;
+    font-style: italic;
+    line-height: 1.5;
+}
+
+/* Confidence bars for dual-source comparison */
+#confidence-bars {
+    margin-top: 20px;
+    padding: 15px;
+    background: #f8f9fa;
+    border-radius: 6px;
+}
+
+#confidence-bars h5 {
+    margin: 0 0 15px 0;
+    color: var(--primary-color);
+}
+
+.confidence-bar-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.confidence-label {
+    min-width: 80px;
+    font-weight: 600;
+    font-size: 0.9em;
+    color: var(--text-color);
+}
+
+.confidence-bar-bg {
+    flex: 1;
+    height: 24px;
+    background: #e0e0e0;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.confidence-bar-fill {
+    height: 100%;
+    background: #4CAF50;
+    transition: width 0.5s ease, background-color 0.3s ease;
+    border-radius: 12px;
+}
+
+.confidence-value {
+    min-width: 45px;
+    text-align: right;
+    font-weight: 600;
+    font-size: 0.9em;
+    color: var(--text-color);
 }
 
 .scores-summary {

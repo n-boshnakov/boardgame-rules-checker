@@ -2,6 +2,7 @@
 const questionForm = document.getElementById('question-form');
 const questionInput = document.getElementById('question-input');
 const semanticToggle = document.getElementById('semantic-toggle');
+const dualSourceToggle = document.getElementById('dual-source-toggle');
 const askButton = document.getElementById('ask-button');
 const loadingSection = document.getElementById('loading');
 const answerSection = document.getElementById('answer-section');
@@ -44,7 +45,9 @@ questionForm.addEventListener('submit', async (e) => {
             },
             body: JSON.stringify({
                 question: question,
-                use_semantic: semanticToggle.checked
+                use_semantic: semanticToggle.checked,
+                use_dual_source: dualSourceToggle.checked,
+                forum_weight: 0.45  // Slightly favors rulebook (0.55)
             })
         });
         
@@ -98,12 +101,51 @@ function displayAnswer(data) {
     }
     
     // Quality scores
-    displayScores(data.scores);
+    displayScores(data.scores, data.score_weights);
+    
+    // Forum metadata (if available)
+    if (data.forum_metadata && data.source === 'forum') {
+        displayForumMetadata(data.forum_metadata);
+    } else {
+        document.getElementById('forum-metadata').style.display = 'none';
+    }
+    
+    // Related forum question (shown when rulebook is selected in dual-source)
+    if (data.related_forum_question && data.source === 'rulebook') {
+        displayRelatedForumQuestion(data.related_forum_question);
+    } else {
+        document.getElementById('related-forum-question').style.display = 'none';
+    }
     
     // Debug information
     debugTime.textContent = data.processing_time;
     debugChunksCount.textContent = data.chunks_retrieved;
     debugSemantic.textContent = data.semantic_analysis_used ? 'Enabled' : 'Disabled';
+    
+    const debugDualSource = document.getElementById('debug-dual-source');
+    if (debugDualSource) {
+        debugDualSource.textContent = data.dual_source_used ? 'Enabled' : 'Disabled';
+    }
+    
+    // Related forum question in debug (if available)
+    const debugRelatedQuestionItem = document.getElementById('debug-related-question-item');
+    const debugRelatedQuestion = document.getElementById('debug-related-question');
+    if (data.related_forum_question && data.source === 'rulebook') {
+        debugRelatedQuestion.textContent = data.related_forum_question;
+        debugRelatedQuestionItem.style.display = 'block';
+    } else {
+        debugRelatedQuestionItem.style.display = 'none';
+    }
+    
+    // Confidence bars (if dual-source)
+    if (data.dual_source_used && data.forum_confidence !== undefined && data.rulebook_confidence !== undefined) {
+        displayConfidenceBars(data.forum_confidence, data.rulebook_confidence, data.source);
+    } else {
+        const confidenceBars = document.getElementById('confidence-bars');
+        if (confidenceBars) {
+            confidenceBars.style.display = 'none';
+        }
+    }
     
     // Display semantic debug info if available
     if (data.semantic_debug) {
@@ -123,7 +165,7 @@ function displayAnswer(data) {
 }
 
 // Display quality scores
-function displayScores(scores) {
+function displayScores(scores, weights) {
     scoreGrid.innerHTML = '';
     
     const scoreLabels = {
@@ -141,7 +183,12 @@ function displayScores(scores) {
         
         const scoreLabel = document.createElement('div');
         scoreLabel.className = 'score-label';
-        scoreLabel.textContent = label;
+        // Add weight to label for dimensions (not overall)
+        if (key !== 'overall' && weights && weights[key]) {
+            scoreLabel.textContent = `${label} (${weights[key]})`;
+        } else {
+            scoreLabel.textContent = label;
+        }
         
         const scoreValueEl = document.createElement('div');
         scoreValueEl.className = 'score-value';
@@ -187,13 +234,48 @@ function displayChunks(chunks) {
         score.className = 'chunk-score';
         score.textContent = `Score: ${chunk.score.toFixed(4)}`;
         
-        header.appendChild(rank);
-        header.appendChild(score);
+        // Add entity matches if available
+        if (chunk.entity_matches && chunk.entity_matches > 0) {
+            const entityInfo = document.createElement('span');
+            entityInfo.className = 'chunk-entities';
+            entityInfo.style.color = '#28a745';
+            entityInfo.style.fontWeight = 'bold';
+            entityInfo.textContent = `🎯 ${chunk.entity_matches} entities`;
+            header.appendChild(rank);
+            header.appendChild(score);
+            header.appendChild(entityInfo);
+        } else {
+            header.appendChild(rank);
+            header.appendChild(score);
+        }
         
-        // Metadata
+        // Metadata - different for forum vs rulebook chunks
         const meta = document.createElement('div');
         meta.className = 'chunk-meta';
-        meta.textContent = `Page: ${chunk.page || 'N/A'} | Section: ${chunk.section}`;
+        
+        if (chunk.source_type === 'forum') {
+            // Forum chunk: show original question, answered_by and link
+            const originalQuestion = chunk.original_question || 'N/A';
+            const answerBy = chunk.answered_by || 'Unknown';
+            const threadUrl = chunk.thread_url || '#';
+            let metaContent = `<strong>Original Question:</strong> <em>${originalQuestion}</em><br><strong>Answered by:</strong> ${answerBy} | <a href="${threadUrl}" target="_blank">View Thread</a>`;
+            
+            // Add matched entity types if available
+            if (chunk.matched_entity_types && chunk.matched_entity_types.length > 0) {
+                metaContent += `<br><strong>Matched Entities:</strong> <span style="color: #28a745;">${chunk.matched_entity_types.join(', ')}</span>`;
+            }
+            meta.innerHTML = metaContent;
+        } else {
+            // Rulebook chunk: show page and section
+            let metaContent = `Page: ${chunk.page || 'N/A'} | Section: ${chunk.section}`;
+            
+            // Add matched entity types if available
+            if (chunk.matched_entity_types && chunk.matched_entity_types.length > 0) {
+                metaContent += ` | <strong>Matched:</strong> <span style="color: #28a745;">${chunk.matched_entity_types.join(', ')}</span>`;
+            }
+            meta.textContent = '';
+            meta.innerHTML = metaContent;
+        }
         
         // Text content
         const text = document.createElement('div');
@@ -251,6 +333,20 @@ function displaySemanticDebug(semanticDebug) {
         (semanticDebug.domain_keywords && semanticDebug.domain_keywords.length > 0) 
             ? semanticDebug.domain_keywords.join(', ') 
             : '-';
+    
+    // Format extracted entities
+    const entitiesEl = document.getElementById('semantic-entities');
+    if (semanticDebug.extracted_entities && Object.keys(semanticDebug.extracted_entities).length > 0) {
+        const entityParts = [];
+        for (const [entityType, entities] of Object.entries(semanticDebug.extracted_entities)) {
+            if (entities.length > 0) {
+                entityParts.push(`${entityType}: ${entities.join(', ')}`);
+            }
+        }
+        entitiesEl.textContent = entityParts.length > 0 ? entityParts.join(' | ') : '-';
+    } else {
+        entitiesEl.textContent = '-';
+    }
     
     // Format intent flags
     const intentFlags = semanticDebug.intent_flags || {};
@@ -326,6 +422,65 @@ function displaySpellcheckCorrections(corrections, originalQuestion, correctedQu
 function showError(message) {
     errorMessage.textContent = message;
     errorSection.style.display = 'block';
+}
+
+// Display forum metadata
+function displayForumMetadata(metadata) {
+    const section = document.getElementById('forum-metadata');
+    const threadQuestionEl = document.getElementById('forum-thread-question');
+    const userEl = document.getElementById('forum-user');
+    const urlEl = document.getElementById('forum-url');
+    
+    // Display thread question
+    threadQuestionEl.textContent = metadata.thread_question || 'N/A';
+    
+    userEl.textContent = metadata.answer_user || 'Unknown';
+    
+    if (metadata.url) {
+        urlEl.href = metadata.url;
+        urlEl.style.display = 'inline';
+    } else {
+        urlEl.style.display = 'none';
+    }
+    
+    section.style.display = 'block';
+}
+
+// Display related forum question (when rulebook is selected)
+function displayRelatedForumQuestion(question) {
+    const section = document.getElementById('related-forum-question');
+    const textEl = document.getElementById('related-question-text');
+    
+    textEl.textContent = question;
+    section.style.display = 'block';
+}
+
+// Display confidence bars for dual-source comparison
+function displayConfidenceBars(forumConf, rulebookConf, selectedSource) {
+    const section = document.getElementById('confidence-bars');
+    const forumBar = document.getElementById('forum-confidence-bar');
+    const rulebookBar = document.getElementById('rulebook-confidence-bar');
+    const forumValue = document.getElementById('forum-confidence-value');
+    const rulebookValue = document.getElementById('rulebook-confidence-value');
+    
+    const forumPct = (forumConf * 100).toFixed(0);
+    const rulebookPct = (rulebookConf * 100).toFixed(0);
+    
+    forumBar.style.width = forumPct + '%';
+    rulebookBar.style.width = rulebookPct + '%';
+    forumValue.textContent = forumPct + '%';
+    rulebookValue.textContent = rulebookPct + '%';
+    
+    // Highlight selected source
+    if (selectedSource === 'forum') {
+        forumBar.style.backgroundColor = '#4CAF50';
+        rulebookBar.style.backgroundColor = '#ccc';
+    } else {
+        forumBar.style.backgroundColor = '#ccc';
+        rulebookBar.style.backgroundColor = '#2196F3';
+    }
+    
+    section.style.display = 'block';
 }
 
 // Helper function

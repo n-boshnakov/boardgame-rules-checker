@@ -66,6 +66,8 @@ class RulebookRetriever:
     def spellcheck_question(self, question: str) -> Tuple[str, List[Tuple[str, str]]]:
         """Correct spelling mistakes in the question.
         
+        Named entities and unique game terms are protected from correction.
+        
         Args:
             question: The original question text
             
@@ -76,19 +78,61 @@ class RulebookRetriever:
             return question, []
         
         try:
+            # Build set of protected words from unique terms + NER entities
+            protected_words = set()
+            
+            # Load unique terms from CSV
+            if self.unique_terms_path and os.path.exists(self.unique_terms_path):
+                try:
+                    import csv
+                    with open(self.unique_terms_path, 'r', encoding='utf-8') as f:
+                        reader = csv.reader(f)
+                        for row in reader:
+                            if row:
+                                protected_words.add(row[0].lower())
+                except Exception:
+                    pass
+            
+            # Extract entities using NER if available
+            if self.semantic_analyzer:
+                try:
+                    entities = self.semantic_analyzer.extract_game_entities(question)
+                    # Add all found entities to protected set
+                    for entity_type, entity_list in entities.items():
+                        for entity in entity_list:
+                            protected_words.add(entity.lower())
+                            # Also add individual words from multi-word entities
+                            for word in entity.split():
+                                protected_words.add(word.lower())
+                except Exception:
+                    pass
+            
+            # Run spellchecker
             result = self.spellchecker(
                 question,
                 language='en',
-                generate_corrections_file=False,  # Don't save corrections
+                generate_corrections_file=False,
                 unique_terms_file=self.unique_terms_path
             )
             corrected = result.get('corrected_text', question)
-            corrections = [(orig, corr) for orig, corr in result.get('checked_words', []) if orig != corr]
+            all_corrections = result.get('checked_words', [])
             
-            if corrections:
-                print(f"[Retriever] Spellcheck corrections: {corrections}")
+            # Filter out corrections for protected words
+            filtered_corrections = []
+            for orig, corr in all_corrections:
+                if orig != corr and orig.lower() not in protected_words:
+                    filtered_corrections.append((orig, corr))
             
-            return corrected, corrections
+            # Reconstruct corrected text, applying only non-protected corrections
+            if filtered_corrections:
+                import re
+                corrected = question
+                for orig, corr in filtered_corrections:
+                    pattern = r'\b' + re.escape(orig) + r'\b'
+                    corrected = re.sub(pattern, corr, corrected, flags=re.IGNORECASE)
+                print(f"[Retriever] Spellcheck corrections: {filtered_corrections}")
+            
+            return corrected, filtered_corrections
         except Exception as e:
             print(f"[Retriever] Spellcheck error: {e}")
             return question, []
@@ -97,7 +141,7 @@ class RulebookRetriever:
         # Normalize to unit vectors for cosine similarity stability
         return self.model.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
 
-    def _vector_search_script(self, query_vec: np.ndarray, size: int, section: Optional[str] = None):
+    def _vector_search_script(self, query_vec: np.ndarray, size: int, section: Optional[str] = None, source_type: Optional[str] = None):
         script_query = {
             "script_score": {
                 "query": {"bool": {"must": []}},
@@ -107,11 +151,16 @@ class RulebookRetriever:
                 }
             }
         }
+        filters = []
         if section:
-            script_query["script_score"]["query"]["bool"]["filter"] = [{"term": {"section": section}}]
+            filters.append({"term": {"section": section}})
+        if source_type:
+            filters.append({"term": {"source_type": source_type}})
+        if filters:
+            script_query["script_score"]["query"]["bool"]["filter"] = filters
         return self.es.search(index=ES_INDEX, body={"size": size, "query": script_query})
 
-    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85, use_semantic: bool = None) -> List[Dict]:
+    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85, use_semantic: bool = None, source_type: Optional[str] = None, skip_entity_boosting: bool = False) -> List[Dict]:
         # Spellcheck the query first
         corrected_query, corrections = self.spellcheck_question(query)
         if corrections:
@@ -142,11 +191,19 @@ class RulebookRetriever:
 
         def parse_hits(res):
             hits = res.get("hits", {}).get("hits", [])
-            return [{"score": h.get("_score", 0.0), **h["_source"]} for h in hits]
+            parsed = []
+            for h in hits:
+                doc = dict(h["_source"])
+                # Preserve ES relevance score, rename forum quality score if present
+                if "score" in doc:
+                    doc["forum_quality_score"] = doc.pop("score")
+                doc["score"] = h.get("_score", 0.0)
+                parsed.append(doc)
+            return parsed
 
         if search_type == "vector":
-            res = self._vector_search_script(query_vec, size=top_k, section=section)
-            return parse_hits(res)
+            res = self._vector_search_script(query_vec, size=top_k, section=section, source_type=source_type)
+            combined = parse_hits(res)
 
         elif search_type == "keyword":
             # Prefer precise phrasing while retaining recall
@@ -162,15 +219,20 @@ class RulebookRetriever:
                     "minimum_should_match": 0
                 }
             }
+            filters = []
             if section:
-                keyword_query["bool"]["filter"] = [{"term": {"section": section}}]
+                filters.append({"term": {"section": section}})
+            if source_type:
+                filters.append({"term": {"source_type": source_type}})
+            if filters:
+                keyword_query["bool"]["filter"] = filters
             res = self.es.search(index=ES_INDEX, body={"size": top_k, "query": keyword_query})
             return parse_hits(res)
 
         elif search_type == "hybrid":
             # Vector side: fetch more for merging (balanced, low overhead)
             vec_size = max(top_k * 5, 25)
-            vector_res = self._vector_search_script(query_vec, size=vec_size, section=section)
+            vector_res = self._vector_search_script(query_vec, size=vec_size, section=section, source_type=source_type)
             vector_hits = vector_res.get("hits", {}).get("hits", [])
 
             # Keyword side: prefer phrasing + and-operator; same pool size
@@ -186,8 +248,13 @@ class RulebookRetriever:
                     "minimum_should_match": 0
                 }
             }
+            filters = []
             if section:
-                keyword_query["bool"]["filter"] = [{"term": {"section": section}}]
+                filters.append({"term": {"section": section}})
+            if source_type:
+                filters.append({"term": {"source_type": source_type}})
+            if filters:
+                keyword_query["bool"]["filter"] = filters
             keyword_res = self.es.search(index=ES_INDEX, body={"size": vec_size, "query": keyword_query})
             keyword_hits = keyword_res.get("hits", {}).get("hits", [])
 
@@ -197,13 +264,25 @@ class RulebookRetriever:
                 return hit.get("_id") or (src.get("page"), src.get("section"), (src.get("text") or "")[:30])
 
             def norm_scores(hits):
+                """Normalize scores to [0, 1] range, preserving relative differences.
+                For vector scores using script_score (cosineSimilarity + 1.0), we normalize from [1.0, 2.0].
+                For keyword scores, we use min-max within the batch.
+                """
                 scores = [h.get("_score", 0.0) for h in hits]
                 if not scores:
                     return {}
                 mn, mx = min(scores), max(scores)
-                if mx == mn:
-                    return {doc_id(h): 1.0 for h in hits}
-                return {doc_id(h): (h.get("_score", 0.0) - mn) / (mx - mn) for h in hits}
+                
+                # Check if scores are in [1.0, 2.0] range (vector search with script_score)
+                # If so, normalize from absolute range to preserve cross-batch comparisons
+                if mn >= 0.9 and mx <= 2.1:  # Allow small margin for floating point
+                    # Vector scores: normalize from [1.0, 2.0] to [0, 1]
+                    return {doc_id(h): max(0.0, min(1.0, (h.get("_score", 0.0) - 1.0))) for h in hits}
+                else:
+                    # Keyword scores: use min-max normalization
+                    if mx == mn:
+                        return {doc_id(h): 1.0 for h in hits}
+                    return {doc_id(h): (h.get("_score", 0.0) - mn) / (mx - mn) for h in hits}
 
             v_norm = norm_scores(vector_hits)
             k_norm = norm_scores(keyword_hits)
@@ -217,7 +296,13 @@ class RulebookRetriever:
                 k_score = k_norm.get(_id, 0.0)
                 final_score = hybrid_weight * v_score + (1 - hybrid_weight) * k_score
                 h = v_dict.get(_id) or k_dict.get(_id)
-                combined.append({"score": final_score, **h["_source"]})
+                
+                # Create document dict and handle score collision
+                doc = dict(h["_source"])
+                if "score" in doc:
+                    doc["forum_quality_score"] = doc.pop("score")
+                doc["score"] = final_score
+                combined.append(doc)
 
             # Sort by score descending and take top_k
             combined = sorted(combined, key=lambda x: x["score"], reverse=True)[:top_k]
@@ -258,8 +343,183 @@ class RulebookRetriever:
             
             # Re-sort after boosting
             combined.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        
+        # Apply entity-based score boosting for better semantic matching
+        # Skip if explicitly disabled (e.g., in dual-source mode for rulebook to avoid unfair advantage)
+        if should_use_semantic and self.semantic_analyzer and not skip_entity_boosting:
+            try:
+                self._apply_entity_boosting(query, combined)
+            except Exception as e:
+                print(f"[Retriever] Entity boosting failed: {e}")
 
         return combined
+    
+    def _apply_entity_boosting(self, query: str, chunks: List[Dict]) -> None:
+        """
+        Apply entity-based score boosting to chunks.
+        Boosts chunks that share named entities with the query.
+        
+        Args:
+            query: Original query text
+            chunks: List of chunk dicts to boost (modified in-place)
+        """
+        # Extract entities from query
+        query_entities = self.semantic_analyzer.extract_game_entities(query)
+        
+        # Skip if no entities found in query
+        if not query_entities:
+            return
+        
+        # Calculate total query entities for normalization
+        total_query_entities = sum(len(entities) for entities in query_entities.values())
+        
+        for chunk in chunks:
+            # Extract entities from chunk text
+            chunk_entities = self.semantic_analyzer.extract_game_entities(chunk.get("text", ""))
+            
+            # Calculate entity overlap across all categories (excluding UNKNOWN)
+            entity_overlap = 0
+            matched_categories = []
+            
+            for entity_type, query_ents in query_entities.items():
+                # Skip UNKNOWN entities as they are unreliable
+                if entity_type == 'UNKNOWN':
+                    continue
+                    
+                chunk_ents = chunk_entities.get(entity_type, [])
+                if chunk_ents:
+                    # Count matching entities (case-insensitive)
+                    query_ents_lower = [e.lower() for e in query_ents]
+                    chunk_ents_lower = [e.lower() for e in chunk_ents]
+                    matches = len(set(query_ents_lower) & set(chunk_ents_lower))
+                    
+                    if matches > 0:
+                        entity_overlap += matches
+                        matched_categories.append(entity_type)
+            
+            # Apply boost based on entity overlap
+            # Require minimum 2 entity matches to avoid over-boosting common single entities
+            if entity_overlap >= 2:
+                # 10% boost per matched entity, capped at 20% total boost
+                boost_factor = 1.0 + min(0.20, 0.10 * entity_overlap)
+                original_score = chunk.get("score", 0.0)
+                chunk["score"] = original_score * boost_factor
+                chunk["entity_matches"] = entity_overlap
+                chunk["matched_entity_types"] = matched_categories
+                
+                # Debug info
+                print(f"[EntityBoost] +{(boost_factor-1)*100:.0f}% for {entity_overlap} entities: {matched_categories}")
+            elif entity_overlap > 0:
+                # Store entity info but don't boost for single entity match
+                chunk["entity_matches"] = entity_overlap
+                chunk["matched_entity_types"] = matched_categories
+            else:
+                chunk["entity_matches"] = 0
+        
+        # Re-sort after entity boosting
+        chunks.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+    
+    def search_dual_source(self, query: str, top_k: int = 5, forum_weight: float = 0.45, use_semantic: bool = None) -> tuple:
+        """Search both forum Q&A and rulebook, returning best source.
+        
+        Args:
+            query: User question
+            top_k: Number of results per source
+            forum_weight: Weight for forum results (0-1), rulebook gets (1-weight)
+            use_semantic: Enable semantic query expansion (None = use instance default)
+        
+        Returns:
+            Tuple: (chunks, source, forum_confidence, rulebook_confidence)
+                chunks: List of result dicts from chosen source
+                source: "forum" or "rulebook"
+                forum_confidence: Float 0-1
+                rulebook_confidence: Float 0-1
+        """
+        # Determine semantic setting
+        should_use_semantic = use_semantic if use_semantic is not None else self.use_semantic_analysis
+        # Spellcheck once
+        corrected_query, corrections = self.spellcheck_question(query)
+        if corrections:
+            print(f"[DualSearch] Corrected: {query} -> {corrected_query}")
+            query = corrected_query
+        
+        # Search forum for similar questions
+        print(f"[DualSearch] Searching forum Q&A...")
+        forum_results = self.search(
+            query, 
+            top_k=top_k, 
+            search_type="vector",  # Pure semantic for question matching
+            use_semantic=False,  # No query expansion for forum
+            source_type="forum"  # Filter to forum only
+        )
+        
+        # Search rulebook with hybrid approach
+        # Disable entity boosting for rulebook to prevent unfair advantage over forum
+        print(f"[DualSearch] Searching rulebook...")
+        rulebook_results = self.search(
+            query,
+            top_k=top_k,
+            search_type="hybrid",
+            hybrid_weight=0.85,
+            use_semantic=should_use_semantic,
+            source_type="rulebook",  # Filter to rulebook only
+            skip_entity_boosting=True  # Disable entity boosting in dual-source mode
+        )
+        
+        # Calculate confidence scores
+        forum_confidence = forum_results[0].get('score', 0.0) if forum_results else 0.0
+        rulebook_confidence = rulebook_results[0].get('score', 0.0) if rulebook_results else 0.0
+        
+        # Normalize scores to 0-1 range for consistent comparison
+        # Vector search uses script_score which returns: cosineSimilarity() + 1.0
+        # This gives scores in range [1.0, 2.0] where 1.0 = no similarity, 2.0 = perfect match
+        # Hybrid search now uses improved normalization that preserves absolute scores
+        
+        # For debugging: print raw scores
+        print(f"[DualSearch] Raw scores - Forum: {forum_confidence:.3f}, Rulebook: {rulebook_confidence:.3f}")
+        
+        # Normalize forum scores (pure vector search)
+        if forum_results and forum_confidence > 1.0:
+            # Vector search: normalize from [1.0, 2.0] to [0, 1]
+            forum_confidence = max(0, min(1, (forum_confidence - 1.0)))
+        
+        # Normalize rulebook scores (hybrid search)
+        if rulebook_results and rulebook_confidence > 1.0:
+            # If using script_score format, normalize from [1.0, 2.0] to [0, 1]
+            rulebook_confidence = max(0, min(1, (rulebook_confidence - 1.0)))
+        # else: already in [0, 1] range from hybrid normalization
+        
+        # Apply source weights
+        forum_weighted = forum_confidence * forum_weight
+        rulebook_weighted = rulebook_confidence * (1 - forum_weight)
+        
+        print(f"[DualSearch] Forum confidence: {forum_confidence:.3f} (weighted: {forum_weighted:.3f})")
+        print(f"[DualSearch] Rulebook confidence: {rulebook_confidence:.3f} (weighted: {rulebook_weighted:.3f})")
+        
+        # Decision logic: Choose source with higher weighted confidence
+        # Only prefer rulebook if it's clearly better (>0.1 difference after weighting)
+        # This ensures forum has fair chance when questions match well
+        
+        if not forum_results and not rulebook_results:
+            return [], "none", 0.0, 0.0
+        
+        # Use weighted scores for decision
+        if forum_weighted > rulebook_weighted:
+            # Forum has higher weighted score - use it
+            print(f"[DualSearch] Selected: Forum (weighted {forum_weighted:.3f} > {rulebook_weighted:.3f})")
+            return forum_results, "forum", forum_confidence, rulebook_confidence, None
+        elif rulebook_results:
+            # Rulebook has higher or equal weighted score - use it
+            print(f"[DualSearch] Selected: Rulebook (weighted {rulebook_weighted:.3f} >= {forum_weighted:.3f})")
+            # Include top forum question for reference when rulebook is selected
+            related_forum_question = forum_results[0].get('text') if forum_results else None
+            return rulebook_results, "rulebook", forum_confidence, rulebook_confidence, related_forum_question
+        elif forum_results:
+            # Only forum has results
+            print(f"[DualSearch] Selected: Forum (only source available)")
+            return forum_results, "forum", forum_confidence, rulebook_confidence, None
+        else:
+            return [], "none", 0.0, 0.0, None
 
     def generate_answer(self, question: str, chunks: List[Dict], use_semantic: bool = None) -> str:
         """Generate answer by concatenating top relevant chunks (extractive method).
