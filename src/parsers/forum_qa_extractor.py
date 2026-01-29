@@ -290,7 +290,7 @@ class AnswerRanker:
         r'(?:you (?:can|should|must|need)|it (?:says|states))',  # Instructions
     ]
     
-    # Phase 3: Speculative/uncertain answer patterns
+    # Speculative/uncertain answer patterns
     SPECULATIVE_PATTERNS = [
         r"I don't know",
         r"I'm not sure",
@@ -303,7 +303,7 @@ class AnswerRanker:
         r"unclear",
     ]
     
-    # Phase 3: Definitive language patterns (indicates confident, factual answers)
+    # Definitive language patterns (indicates confident, factual answers)
     DEFINITIVE_PATTERNS = [
         r'\byes\b', r'\bno\b',
         r'\bcorrect\b', r'\bincorrect\b',
@@ -315,14 +315,14 @@ class AnswerRanker:
     def __init__(self):
         self.acknowledgment_regex = [re.compile(p, re.IGNORECASE) for p in self.ACKNOWLEDGMENT_PATTERNS]
         self.useful_regex = [re.compile(p, re.IGNORECASE) for p in self.USEFUL_PATTERNS]
-        # Phase 3: Compile speculative and definitive patterns
+        # Compile speculative and definitive patterns
         self.speculative_regex = [re.compile(p, re.IGNORECASE) for p in self.SPECULATIVE_PATTERNS]
         self.definitive_regex = [re.compile(p, re.IGNORECASE) for p in self.DEFINITIVE_PATTERNS]
         self.quote_detector = QuoteDetector()
         self.answer_cleaner = AnswerCleaner()
     
     def score_answer(self, post: Dict, is_original_poster: bool = False, question_text: str = '') -> Tuple[int, str]:
-        """Score an answer and return cleaned content with Phase 3 improvements."""
+        """Score an answer and return cleaned content."""
         content = post.get('content', '').strip()
         score = 0
         
@@ -335,7 +335,7 @@ class AnswerRanker:
             if pattern.match(content):
                 return 0, content
         
-        # Use comprehensive cleaning pipeline (Phase 1 improvement)
+        # Use comprehensive cleaning pipeline
         if question_text:
             content = self.quote_detector.clean_answer_comprehensive(content, question_text)
             # Award bonus for successful cleaning/direct response
@@ -351,7 +351,7 @@ class AnswerRanker:
         if len(content) < 15:
             return max(0, score), content
         
-        # === PHASE 3: IMPROVED LENGTH SCORING ===
+        # Improved length scoring
         length = len(content)
         
         if 50 <= length <= 200:
@@ -367,7 +367,7 @@ class AnswerRanker:
             # Too long, likely concatenated or off-topic
             score -= 2
         
-        # === PHASE 3: SPECIFICITY SCORING ===
+        # Specificity scoring
         
         # Useful content indicators (page refs, rulebook mentions)
         for pattern in self.useful_regex:
@@ -379,7 +379,7 @@ class AnswerRanker:
         if re.search(r'\b\d+\b', content):  # Contains numbers
             score += 1
         
-        # Phase 3: Definitive language bonus
+        # Definitive language bonus
         has_definitive = False
         for pattern in self.definitive_regex:
             if pattern.search(content):
@@ -387,7 +387,7 @@ class AnswerRanker:
                 has_definitive = True
                 break
         
-        # === PHASE 3: UNCERTAINTY PENALTIES ===
+        # Uncertainty penalties
         
         # Speculative language detection
         for pattern in self.speculative_regex:
@@ -452,7 +452,7 @@ class QuestionExtractor:
     # Question word indicators
     QUESTION_WORDS = ['how', 'what', 'when', 'where', 'why', 'who', 'which', 'can', 'should', 'does', 'is', 'are']
     
-    # Phase 2: Maximum reasonable question length
+    # Maximum reasonable question length
     MAX_QUESTION_LENGTH = 150
     
     def __init__(self):
@@ -474,7 +474,7 @@ class QuestionExtractor:
         return False
     
     def ensure_question_mark(self, text: str) -> str:
-        """Ensure question ends with '?' if it's clearly a question (Phase 2)."""
+        """Ensure question ends with '?' if it's clearly a question."""
         text = text.strip()
         
         # Already has "?"
@@ -509,7 +509,7 @@ class QuestionExtractor:
     
     def extract_core_question(self, long_title: str) -> Optional[str]:
         """
-        Extract core question from overly long title (Phase 2).
+        Extract core question from overly long title.
         
         Strategy:
         - Find first sentence with "?"
@@ -568,7 +568,7 @@ class QuestionExtractor:
         return questions if questions else [text]
     
     def extract_question(self, thread: Dict) -> Optional[str]:
-        """Extract question from thread title and first post with Phase 2 improvements."""
+        """Extract question from thread title and first post."""
         title = thread.get('title', '').strip()
         posts = thread.get('posts', [])
         content = posts[0].get('content', '').strip() if posts else ''
@@ -576,17 +576,17 @@ class QuestionExtractor:
         # Clean the title
         cleaned_title = self.clean_question(title)
         
-        # Phase 2: Strategy 1 - Short, complete title with "?" - use as-is
+        # Strategy 1 - Short, complete title with "?" - use as-is
         if '?' in cleaned_title and len(cleaned_title) < self.MAX_QUESTION_LENGTH:
             return cleaned_title
         
-        # Phase 2: Strategy 2 - Long title without "?" - extract core question
+        # Strategy 2 - Long title without "?" - extract core question
         if len(cleaned_title) > self.MAX_QUESTION_LENGTH:
             core_question = self.extract_core_question(cleaned_title)
             if core_question and len(core_question) > 10:
                 return core_question
         
-        # Phase 2: Strategy 3 - Title is topic, content has actual question
+        # Strategy 3 - Title is topic, content has actual question
         if content and ':' in cleaned_title:
             # Title is likely "Topic: Description" format
             # Look for question in content
@@ -609,7 +609,7 @@ class QuestionExtractor:
         )
         
         if title_is_complete and len(cleaned_title) > 10:
-            # Phase 2: Ensure question mark if it looks like a question
+            # Ensure question mark if it looks like a question
             return self.ensure_question_mark(cleaned_title)
         
         # Strategy 5: Title is incomplete - merge with content
@@ -635,7 +635,7 @@ class QuestionExtractor:
                         merged = f"{cleaned_title}: {cleaned_sent}"
                         merged = self.ensure_question_mark(merged)
                         
-                        # Phase 2: Truncate if too long
+                        # Truncate if too long
                         if len(merged) > self.MAX_QUESTION_LENGTH:
                             merged = self.extract_core_question(merged) or merged[:self.MAX_QUESTION_LENGTH] + '?'
                         
@@ -648,7 +648,7 @@ class QuestionExtractor:
                         merged = f"{cleaned_title}: {first_sentence}"
                         merged = self.ensure_question_mark(merged)
                         
-                        # Phase 2: Truncate if too long
+                        # Truncate if too long
                         if len(merged) > self.MAX_QUESTION_LENGTH:
                             merged = self.extract_core_question(merged) or merged[:self.MAX_QUESTION_LENGTH] + '?'
                         

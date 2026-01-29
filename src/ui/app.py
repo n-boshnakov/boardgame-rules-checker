@@ -18,6 +18,15 @@ from qa.multi_dimensional_scorer import MultiDimensionalScorer
 
 app = Flask(__name__)
 
+# Disable caching for all responses
+@app.after_request
+def add_no_cache_headers(response):
+    """Add headers to prevent browser caching of responses."""
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
 # Initialize retriever and scorer (reuse across requests)
 print("[UI] Initializing retriever and scorer...")
 print("[UI] This may take 1-2 minutes on first run (downloading models)...")
@@ -74,7 +83,7 @@ def ask_question():
         question = data.get('question', '').strip()
         use_semantic = data.get('use_semantic', False)
         use_dual_source = data.get('use_dual_source', False)
-        forum_weight = data.get('forum_weight', 0.5)
+        forum_weight = data.get('forum_weight', 0.45)  # Default slightly favors rulebook (0.55)
         
         if not question:
             return jsonify({"error": "Question cannot be empty"}), 400
@@ -270,8 +279,14 @@ def ask_question():
                     "source_type": 'rulebook'
                 })
         
-        # Calculate overall confidence (weighted average of relevance and completeness)
-        confidence = (scores.get('relevance', 0.5) * 0.6 + scores.get('completeness', 0.5) * 0.4)
+        # Calculate overall confidence using scorer's dimension weights
+        # Current weights: relevance 30%, completeness 25%, accuracy 40%, conciseness 5%
+        confidence = (
+            scores.get('relevance', 0.5) * scorer.weights['relevance'] +
+            scores.get('completeness', 0.5) * scorer.weights['completeness'] +
+            scores.get('accuracy', 0.5) * scorer.weights['accuracy'] +
+            scores.get('conciseness', 0.5) * scorer.weights['conciseness']
+        )
         
         processing_time = time.time() - start_time
         
@@ -286,6 +301,12 @@ def ask_question():
                 "completeness": round(scores.get('completeness', 0.0), 2),
                 "accuracy": round(scores.get('accuracy', 0.0), 2),
                 "conciseness": round(scores.get('conciseness', 0.0), 2)
+            },
+            "score_weights": {
+                "relevance": f"{scorer.weights['relevance']*100:.0f}%",
+                "completeness": f"{scorer.weights['completeness']*100:.0f}%",
+                "accuracy": f"{scorer.weights['accuracy']*100:.0f}%",
+                "conciseness": f"{scorer.weights['conciseness']*100:.0f}%"
             },
             "chunks_retrieved": len(chunks),
             "chunk_details": chunk_details,

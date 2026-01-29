@@ -240,10 +240,10 @@ def main(args):
     print(f"Questions processed: {len(results_df)}")
     print(f"Answer sources: {source_dist}")
     print(f"Mean overall score: {mean_overall_score:.2%}")
-    print(f"  - Relevance (35%):     {mean_relevance:.2%}")
-    print(f"  - Completeness (30%):  {mean_completeness:.2%}")
-    print(f"  - Accuracy (25%):      {mean_accuracy:.2%}")
-    print(f"  - Conciseness (10%):   {mean_conciseness:.2%}")
+    print(f"  - Relevance ({scorer.weights['relevance']:.0%}):     {mean_relevance:.2%}")
+    print(f"  - Completeness ({scorer.weights['completeness']:.0%}):  {mean_completeness:.2%}")
+    print(f"  - Accuracy ({scorer.weights['accuracy']:.0%}):      {mean_accuracy:.2%}")
+    print(f"  - Conciseness ({scorer.weights['conciseness']:.0%}):   {mean_conciseness:.2%}")
     print(f"Passing (≥0.8): {passing_count}/{len(results_df)} ({passing_count/len(results_df):.1%})")
     print(f"Processing time: {elapsed_time}s")
     print(f"\nResults saved to:")
@@ -304,8 +304,8 @@ Examples:
     parser.add_argument(
         "--forum_weight",
         type=float,
-        default=0.5,
-        help="Weight for forum results in dual-source mode (0-1, default: 0.5)"
+        default=0.45,
+        help="Weight for forum results in dual-source mode (0-1, default: 0.45 - slightly favors rulebook)"
     )
     
     args = parser.parse_args()

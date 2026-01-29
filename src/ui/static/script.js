@@ -47,7 +47,7 @@ questionForm.addEventListener('submit', async (e) => {
                 question: question,
                 use_semantic: semanticToggle.checked,
                 use_dual_source: dualSourceToggle.checked,
-                forum_weight: 0.5
+                forum_weight: 0.45  // Slightly favors rulebook (0.55)
             })
         });
         
@@ -101,7 +101,7 @@ function displayAnswer(data) {
     }
     
     // Quality scores
-    displayScores(data.scores);
+    displayScores(data.scores, data.score_weights);
     
     // Forum metadata (if available)
     if (data.forum_metadata && data.source === 'forum') {
@@ -165,7 +165,7 @@ function displayAnswer(data) {
 }
 
 // Display quality scores
-function displayScores(scores) {
+function displayScores(scores, weights) {
     scoreGrid.innerHTML = '';
     
     const scoreLabels = {
@@ -183,7 +183,12 @@ function displayScores(scores) {
         
         const scoreLabel = document.createElement('div');
         scoreLabel.className = 'score-label';
-        scoreLabel.textContent = label;
+        // Add weight to label for dimensions (not overall)
+        if (key !== 'overall' && weights && weights[key]) {
+            scoreLabel.textContent = `${label} (${weights[key]})`;
+        } else {
+            scoreLabel.textContent = label;
+        }
         
         const scoreValueEl = document.createElement('div');
         scoreValueEl.className = 'score-value';

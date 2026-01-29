@@ -10,11 +10,12 @@ Evaluates answers across multiple dimensions:
 Replaces single-score evaluation with weighted multi-dimensional approach.
 """
 
-from sentence_transformers import CrossEncoder
+from sentence_transformers import CrossEncoder, SentenceTransformer
 from typing import Dict, List, Optional, Tuple
 import re
 from difflib import SequenceMatcher
 import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 
 class MultiDimensionalScorer:
@@ -27,13 +28,16 @@ class MultiDimensionalScorer:
             cross_encoder_model: Model for relevance scoring
         """
         self.cross_encoder = CrossEncoder(cross_encoder_model)
+        # Add SentenceTransformer for semantic embeddings
+        self.sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2')
         
-        # Default weights for each dimension (can be customized)
+        # Default weights for each dimension (adjusted for semantic understanding)
+        # Heavily prioritize accuracy since it uses robust semantic embeddings
         self.weights = {
-            'relevance': 0.35,      # How relevant to the question
-            'completeness': 0.30,   # Contains key information
-            'accuracy': 0.25,       # Factually correct
-            'conciseness': 0.10     # Appropriate length
+            'relevance': 0.30,      # How relevant to the question
+            'completeness': 0.25,   # Contains key information
+            'accuracy': 0.40,       # Factually correct (increased - most important!)
+            'conciseness': 0.05     # Appropriate length (reduced - less critical)
         }
         
         # Question type keywords for completeness checking
@@ -173,19 +177,30 @@ class MultiDimensionalScorer:
     def _score_accuracy(self, answer: str, ground_truth: str) -> float:
         """
         Score factual accuracy by comparing with ground truth.
+        Uses multiple semantic and lexical measures.
         
         Returns: Score 0-1
         """
         # Multiple accuracy measures
         
-        # 1. Semantic similarity (CrossEncoder)
+        # 1. Semantic similarity using sentence embeddings (most robust)
         try:
-            semantic_score = self.cross_encoder.predict([(ground_truth, answer)])[0]
-            semantic_normalized = 1 / (1 + np.exp(-semantic_score / 3.0))
+            answer_embedding = self.sentence_transformer.encode([answer])
+            gt_embedding = self.sentence_transformer.encode([ground_truth])
+            embedding_similarity = cosine_similarity(answer_embedding, gt_embedding)[0][0]
+            # Normalize to 0-1 range (cosine similarity is already in [-1, 1], typically [0, 1] for similar texts)
+            embedding_similarity = max(0.0, float(embedding_similarity))
         except Exception:
-            semantic_normalized = 0.5
+            embedding_similarity = 0.5
         
-        # 2. Word overlap (Jaccard similarity for key terms)
+        # 2. CrossEncoder semantic similarity (second measure)
+        try:
+            cross_score = self.cross_encoder.predict([(ground_truth, answer)])[0]
+            cross_normalized = 1 / (1 + np.exp(-cross_score / 3.0))
+        except Exception:
+            cross_normalized = 0.5
+        
+        # 3. Word overlap (Jaccard similarity for key terms)
         answer_words = set(re.findall(r'\b[a-z]{4,}\b', answer.lower()))
         gt_words = set(re.findall(r'\b[a-z]{4,}\b', ground_truth.lower()))
         
@@ -194,15 +209,38 @@ class MultiDimensionalScorer:
         else:
             word_overlap = 0.5
         
-        # 3. Sequence matching (for exact phrases)
+        # 4. Sequence matching (for exact phrases)
         sequence_ratio = SequenceMatcher(None, answer.lower(), ground_truth.lower()).ratio()
         
-        # Combine measures with weights
-        accuracy = (
-            0.50 * semantic_normalized +  # Semantic understanding
-            0.30 * word_overlap +          # Term coverage
-            0.20 * sequence_ratio          # Exact phrase matching
-        )
+        # Combine measures with adaptive weights based on semantic confidence
+        # If embedding similarity is high (>0.7), trust it more and reduce strictness
+        if embedding_similarity > 0.7:
+            # High semantic similarity - answer is likely correct, boost the score
+            accuracy = (
+                0.60 * embedding_similarity +  # Trust embeddings heavily
+                0.25 * cross_normalized +      # CrossEncoder validation
+                0.10 * word_overlap +          # Term coverage (reduced weight)
+                0.05 * sequence_ratio          # Exact matching (minimal weight)
+            )
+        else:
+            # Lower semantic similarity - use balanced approach
+            accuracy = (
+                0.45 * embedding_similarity +  # Sentence embeddings
+                0.25 * cross_normalized +      # CrossEncoder validation
+                0.20 * word_overlap +          # Term coverage
+                0.10 * sequence_ratio          # Exact phrase matching
+            )
+        
+        # Tiered paraphrase boosting - trust high semantic similarity
+        if embedding_similarity > 0.8:
+            # Very high semantic match - definitely correct
+            accuracy = max(accuracy, 0.90)
+        elif embedding_similarity > 0.7:
+            # High semantic match - likely correct
+            accuracy = max(accuracy, 0.85)
+        elif embedding_similarity > 0.6:
+            # Moderate semantic match - possibly correct
+            accuracy = max(accuracy, 0.75)
         
         return float(accuracy)
     

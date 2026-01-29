@@ -249,44 +249,62 @@ class SemanticAnalyzerNLTK:
         
         return unique_terms
     
+    def extract_collocations(self, text: str, min_freq: int = 2, top_n: int = 5) -> List[str]:
+        """
+        Extract frequent bigram collocations (multi-word terms) from the text using NLTK.
+        Returns a list of top-N collocations as strings (e.g. 'action point').
+        """
+        try:
+            from nltk.collocations import BigramCollocationFinder, BigramAssocMeasures
+            tokens = self.word_tokenize(text.lower())
+            finder = BigramCollocationFinder.from_words(tokens)
+            finder.apply_freq_filter(min_freq)
+            bigram_measures = BigramAssocMeasures()
+            collocations = finder.nbest(bigram_measures.pmi, top_n)
+            return [" ".join(bigram) for bigram in collocations]
+        except Exception:
+            return []
+
     def extract_domain_keywords(self, text: str) -> List[str]:
         """
         Extract domain-specific keywords that should be present in the answer.
         These are critical terms that define the question's focus.
-        
+        Now also extracts frequent bigram collocations from the text.
         Returns:
-            List of critical keywords (nouns, game-specific terms)
+            List of critical keywords (nouns, game-specific terms, collocations)
         """
         keywords = []
-        
+
         # Get analysis
         analysis = self.analyze(text)
         text_lower = text.lower()
-        
+
         # Priority 1: Domain-specific nouns (game mechanics, components)
-        # Common question words to exclude
         stop_words = {'action', 'move', 'cost', 'through', 'can', 'does', 'what', 'how', 'when', 'where', 'who', 'why', 'do'}
-        
-        # Extract important nouns (but filter common question structure words)
         for noun in analysis['key_nouns']:
             if noun not in stop_words and len(noun) > 2:
                 keywords.append(noun)
-        
+
         # Priority 2: Game-specific terms from vocabulary
         domain_terms = ['water', 'reload', 'window', 'anomaly', 'artifact', 'enemy', 'stalker', 
                        'radiation', 'loot', 'weapon', 'card', 'mission', 'combat', 'damage',
                        'heal', 'rest', 'search', 'trade', 'wound', 'status', 'equipment', 'psionic', 'mutant']
-        
         for term in domain_terms:
             if term in text_lower and term not in keywords:
                 keywords.append(term)
-        
-        # Priority 3: Multi-word game concepts
+
+        # Priority 3: Multi-word game concepts (static list)
         multi_word_terms = ['line of sight', 'action point', 'skill test', 'zone of control', 'free action']
         for term in multi_word_terms:
-            if term in text_lower:
+            if term in text_lower and term not in keywords:
                 keywords.append(term)
-        
+
+        # Priority 4: Automatically extracted collocations (bigrams)
+        collocations = self.extract_collocations(text, min_freq=2, top_n=3)
+        for coll in collocations:
+            if coll not in keywords:
+                keywords.append(coll)
+
         return keywords[:5]  # Return top 5 most critical keywords
     
     def enhance_query(self, query: str, max_additions: int = 1) -> str:
