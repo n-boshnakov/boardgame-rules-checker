@@ -521,16 +521,21 @@ class RulebookRetriever:
         else:
             return [], "none", 0.0, 0.0, None
 
-    def generate_answer(self, question: str, chunks: List[Dict], use_semantic: bool = None) -> str:
+    def generate_answer(self, question: str, chunks: List[Dict], use_semantic: bool = None):
         """Generate answer by concatenating top relevant chunks (extractive method).
         
         Args:
             question: The question to answer
             chunks: Retrieved chunks
             use_semantic: Override for semantic sentence selection (None = auto-detect based on init)
+        
+        Returns:
+            Tuple of (answer_text, metadata_dict) where metadata contains:
+            - used_chunk_indices: List of chunk indices that contributed to the answer
+            - highest_score_chunk_idx: Index of highest-scoring chunk that was used
         """
         if not chunks:
-            return "No relevant information found."
+            return "No relevant information found.", {"used_chunk_indices": [], "highest_score_chunk_idx": None}
         
         # Determine if we should use semantic selection
         should_use_semantic = use_semantic if use_semantic is not None else (self.use_semantic_analysis and self.semantic_analyzer)
@@ -543,7 +548,7 @@ class RulebookRetriever:
                 return self._generate_answer_extractive(question, chunks)
         return self._generate_answer_extractive(question, chunks)
     
-    def _generate_answer_semantic(self, question: str, chunks: List[Dict]) -> str:
+    def _generate_answer_semantic(self, question: str, chunks: List[Dict]):
         """Generate answer using semantic analysis to understand question intent.
         
         Combines semantic understanding with sentence-level relevance scoring.
@@ -620,6 +625,7 @@ class RulebookRetriever:
         current_length = 0
         max_length = 700
         seen = set()
+        used_chunk_indices = []
         
         for candidate in sentence_candidates[:10]:
             sent = candidate['sentence']
@@ -632,11 +638,17 @@ class RulebookRetriever:
                 answer_parts.append(sent)
                 current_length += len(sent) + 1
                 seen.add(sent_norm)
+                used_chunk_indices.append(candidate['chunk_idx'])
                 
                 if len(answer_parts) >= 5:
                     break
         
-        return " ".join(answer_parts) if answer_parts else chunks[0].get("text", "No relevant information found.")[:700]
+        if answer_parts:
+            # Find highest-scoring chunk among those used
+            highest_score_idx = min(set(used_chunk_indices)) if used_chunk_indices else 0
+            return " ".join(answer_parts), {"used_chunk_indices": used_chunk_indices, "highest_score_chunk_idx": highest_score_idx}
+        else:
+            return chunks[0].get("text", "No relevant information found.")[:700], {"used_chunk_indices": [0], "highest_score_chunk_idx": 0}
     
     def _generate_definitional_answer(self, question: str, chunks: List[Dict], analysis: Dict) -> str:
         """Generate answer for definitional "what is" questions."""
@@ -696,6 +708,7 @@ class RulebookRetriever:
         current_length = 0
         max_length = 600
         seen = set()
+        used_chunk_indices = []
         
         for candidate in sentence_candidates[:8]:
             sent = candidate['sentence']
@@ -708,11 +721,16 @@ class RulebookRetriever:
                 answer_parts.append(sent)
                 current_length += len(sent) + 1
                 seen.add(sent_norm)
+                used_chunk_indices.append(candidate['chunk_idx'])
                 
                 if len(answer_parts) >= 4:
                     break
         
-        return " ".join(answer_parts) if answer_parts else chunks[0].get("text", "No relevant information found.")[:600]
+        if answer_parts:
+            highest_score_idx = min(set(used_chunk_indices)) if used_chunk_indices else 0
+            return " ".join(answer_parts), {"used_chunk_indices": used_chunk_indices, "highest_score_chunk_idx": highest_score_idx}
+        else:
+            return chunks[0].get("text", "No relevant information found.")[:600], {"used_chunk_indices": [0], "highest_score_chunk_idx": 0}
     
     def _generate_quantitative_answer(self, question: str, chunks: List[Dict], analysis: Dict) -> str:
         """Generate answer for quantitative questions (how many, how much)."""
@@ -758,6 +776,7 @@ class RulebookRetriever:
         current_length = 0
         max_length = 500
         seen = set()
+        used_chunk_indices = []
         
         for candidate in sentence_candidates[:6]:
             sent = candidate['sentence']
@@ -770,11 +789,16 @@ class RulebookRetriever:
                 answer_parts.append(sent)
                 current_length += len(sent) + 1
                 seen.add(sent_norm)
+                used_chunk_indices.append(candidate['chunk_idx'])
                 
                 if len(answer_parts) >= 3:
                     break
         
-        return " ".join(answer_parts) if answer_parts else chunks[0].get("text", "No relevant information found.")[:500]
+        if answer_parts:
+            highest_score_idx = min(set(used_chunk_indices)) if used_chunk_indices else 0
+            return " ".join(answer_parts), {"used_chunk_indices": used_chunk_indices, "highest_score_chunk_idx": highest_score_idx}
+        else:
+            return chunks[0].get("text", "No relevant information found.")[:500], {"used_chunk_indices": [0], "highest_score_chunk_idx": 0}
     
     def _generate_answer_sentence_level(self, question: str, chunks: List[Dict]) -> str:
         """Extract most relevant sentences from chunks using semantic similarity."""
@@ -831,7 +855,7 @@ class RulebookRetriever:
                 })
         
         if not sentence_candidates:
-            return "No relevant information found."
+            return "No relevant information found.", {"used_chunk_indices": [], "highest_score_chunk_idx": None}
         
         # Sort by score and select top sentences
         sentence_candidates.sort(key=lambda x: x['score'], reverse=True)
@@ -841,6 +865,7 @@ class RulebookRetriever:
         current_length = 0
         max_length = 600
         seen_sentences = set()
+        used_chunk_indices = []
         
         for candidate in sentence_candidates:
             sentence = candidate['sentence']
@@ -855,6 +880,7 @@ class RulebookRetriever:
                 answer_parts.append(sentence)
                 current_length += len(sentence) + 1
                 seen_sentences.add(sentence_normalized)
+                used_chunk_indices.append(candidate['chunk_idx'])
                 
                 # Stop after getting 3-5 high-quality sentences
                 if len(answer_parts) >= 5 or (len(answer_parts) >= 3 and current_length > 300):
@@ -862,20 +888,22 @@ class RulebookRetriever:
         
         if not answer_parts:
             # Fallback: use top chunk if no sentences passed filters
-            return chunks[0].get("text", "No relevant information found.")[:600]
+            return chunks[0].get("text", "No relevant information found.")[:600], {"used_chunk_indices": [0], "highest_score_chunk_idx": 0}
         
         answer = " ".join(answer_parts)
         answer = re.sub(r"\s+", " ", answer).strip()
-        return answer
+        highest_score_idx = min(set(used_chunk_indices)) if used_chunk_indices else 0
+        return answer, {"used_chunk_indices": used_chunk_indices, "highest_score_chunk_idx": highest_score_idx}
     
-    def _generate_answer_extractive(self, question: str, chunks: List[Dict]) -> str:
+    def _generate_answer_extractive(self, question: str, chunks: List[Dict]):
         """Legacy extractive method - kept for backwards compatibility."""
         # Build answer from chunks up to ~800 characters
         answer_parts = []
         current_length = 0
         max_length = 800
+        used_chunk_indices = []
         
-        for chunk in chunks[:15]:  # Use top 15 chunks for good coverage
+        for chunk_idx, chunk in enumerate(chunks[:15]):  # Use top 15 chunks for good coverage
             text = chunk.get("text", "")
             if not text:
                 continue
@@ -889,16 +917,20 @@ class RulebookRetriever:
                         if current_length + len(sent) <= max_length:
                             answer_parts.append(sent)
                             current_length += len(sent) + 1
+                            if chunk_idx not in used_chunk_indices:
+                                used_chunk_indices.append(chunk_idx)
                         else:
                             break
                 break
             else:
                 answer_parts.append(text)
                 current_length += len(text) + 1
+                used_chunk_indices.append(chunk_idx)
         
         answer = " ".join(answer_parts) if answer_parts else "No relevant information found."
         answer = re.sub(r"\s+", " ", answer).strip()
-        return answer
+        highest_score_idx = min(used_chunk_indices) if used_chunk_indices else 0
+        return answer, {"used_chunk_indices": used_chunk_indices, "highest_score_chunk_idx": highest_score_idx}
 
 
 if __name__ == "__main__":
@@ -930,7 +962,10 @@ if __name__ == "__main__":
         sys.exit(0)
     
     # Generate answer
-    answer = retriever.generate_answer(question, chunks, use_semantic=use_semantic)
+    answer, metadata = retriever.generate_answer(question, chunks, use_semantic=use_semantic)
     
     print(f"Answer:\n{answer}")
+    if metadata.get('highest_score_chunk_idx') is not None:
+        highest_chunk = chunks[metadata['highest_score_chunk_idx']]
+        print(f"\nSource: Page {highest_chunk.get('page', 'N/A')}, Section: {highest_chunk.get('section', 'N/A')}")
     print(f"\n{'='*70}\n")

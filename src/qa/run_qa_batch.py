@@ -85,9 +85,10 @@ def main(args):
             if answer_source == 'forum':
                 # For forum, use the answer field from top chunk
                 predicted_answer = chunks[0].get('answer', 'No answer found.')
+                answer_metadata = {"used_chunk_indices": [0], "highest_score_chunk_idx": 0}
             else:
                 # For rulebook, generate answer from chunks
-                predicted_answer = retriever.generate_answer(question, chunks, use_semantic=args.use_semantic_analysis)
+                predicted_answer, answer_metadata = retriever.generate_answer(question, chunks, use_semantic=args.use_semantic_analysis)
             
             # Set source confidence
             source_confidence = forum_conf if answer_source == 'forum' else rulebook_conf
@@ -111,7 +112,7 @@ def main(args):
                 continue
             
             # Generate answer from retrieved chunks
-            predicted_answer = retriever.generate_answer(question, retrieved_chunks, use_semantic=use_semantic)
+            predicted_answer, answer_metadata = retriever.generate_answer(question, retrieved_chunks, use_semantic=use_semantic)
             answer_source = 'rulebook'
             source_confidence = retrieved_chunks[0].get('score', 0) if retrieved_chunks else 0
             forum_conf = 0

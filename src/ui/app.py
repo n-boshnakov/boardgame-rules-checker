@@ -215,12 +215,14 @@ def ask_question():
         # For forum results, extract the answer field directly
         if answer_source == "forum" and chunks:
             answer = chunks[0].get('answer', 'No answer found.')
+            answer_metadata = {"used_chunk_indices": [0], "highest_score_chunk_idx": 0}
             print(f"[UI] Extracted forum answer: {answer[:100]}...")
         else:
             # For rulebook, generate answer by concatenating relevant chunks
-            answer = retriever.generate_answer(question, chunks, use_semantic=use_semantic)
+            answer, answer_metadata = retriever.generate_answer(question, chunks, use_semantic=use_semantic)
             print(f"[UI] Generated rulebook answer length: {len(answer)}")
             print(f"[UI] Answer preview: {answer[:100]}...")
+            print(f"[UI] Answer metadata: {answer_metadata}")
         
         # Get ground truth (placeholder - in production, this would be optional)
         ground_truth = ""  # Not available in UI mode
@@ -228,8 +230,15 @@ def ask_question():
         # Score the answer using multi-dimensional scorer
         scores = scorer.score_answer(question, answer, ground_truth)
         
-        # Extract source information from top chunk
-        top_chunk = chunks[0]
+        # Extract source information from the chunk that contributed most to the answer
+        # Use the highest-scoring chunk that was actually used in the answer
+        highest_score_chunk_idx = answer_metadata.get("highest_score_chunk_idx")
+        if highest_score_chunk_idx is not None and highest_score_chunk_idx < len(chunks):
+            top_chunk = chunks[highest_score_chunk_idx]
+        else:
+            # Fallback to first chunk if metadata is missing
+            top_chunk = chunks[0]
+        
         source_info = top_chunk.get('source', {})
         
         # For forums, page/section don't exist - handle appropriately

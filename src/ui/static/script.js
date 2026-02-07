@@ -85,6 +85,7 @@ function displayAnswer(data) {
     answerContent.textContent = data.answer;
     
     // Source and page info
+    // Note: page is from the highest-scoring chunk that contributed to the answer
     sourceBadge.textContent = capitalizeFirst(data.source);
     pageInfo.textContent = data.page ? `Page: ${data.page}` : 'Page: N/A';
     
