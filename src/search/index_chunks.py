@@ -46,8 +46,9 @@ MAPPING_TEMPLATE = {
         "properties": {
             # Common fields (all chunk types)
             "text": {"type": "text"},
-            "source_type": {"type": "keyword"},  # "rulebook" or "forum"
+            "source_type": {"type": "keyword"},  # "rulebook", "faq", or "forum"
             "doc_type": {"type": "keyword"},
+            "priority": {"type": "integer"},  # 75 (faq) > 50 (rulebook) > 30 (forum)
             "embedding": {
                 "type": "dense_vector",
                 "dims": EMBEDDING_DIMS,
@@ -58,7 +59,7 @@ MAPPING_TEMPLATE = {
             # Quality and confidence (for all sources)
             "quality_score": {"type": "float"},  # 0-100
             "extraction_confidence": {"type": "float"},  # 0-1
-            "extraction_method": {"type": "keyword"},  # "pdf", "ocr", "forum_scraper"
+            "extraction_method": {"type": "keyword"},  # "pdf", "ocr", "forum_scraper", "manual"
             
             # Rulebook-specific fields
             "page": {"type": "integer"},
@@ -72,7 +73,14 @@ MAPPING_TEMPLATE = {
             "thread_id": {"type": "keyword"},
             "url": {"type": "keyword"},
             "answer_user": {"type": "keyword"},
-            "qa_id": {"type": "keyword"}
+            "qa_id": {"type": "keyword"},
+            
+            # FAQ-specific fields
+            "faq_id": {"type": "keyword"},
+            "source_file": {"type": "keyword"},
+
+            "old_text": {"type": "text"},
+            "new_text": {"type": "text"}
         }
     }
 }
@@ -97,17 +105,21 @@ def detect_chunk_format(chunks: list) -> Dict[str, Any]:
     Returns:
         Dictionary with format information:
         - has_rulebook: bool
+        - has_faq: bool
         - has_forum: bool
         - has_pdf: bool
         - has_ocr: bool
         - has_quality_scores: bool
+        - has_priority: bool
     """
     format_info = {
         'has_rulebook': False,
+        'has_faq': False,
         'has_forum': False,
         'has_pdf': False,
         'has_ocr': False,
         'has_quality_scores': False,
+        'has_priority': False,
         'total_chunks': len(chunks)
     }
     
@@ -115,12 +127,14 @@ def detect_chunk_format(chunks: list) -> Dict[str, Any]:
         return format_info
     
     # Analyze sample chunks
-    for chunk in chunks[:min(10, len(chunks))]:
+    for chunk in chunks[:min(20, len(chunks))]:
         source_type = chunk.get('source_type', 'rulebook')
         extraction_method = chunk.get('extraction_method', 'unknown')
         
         if source_type == 'rulebook':
             format_info['has_rulebook'] = True
+        elif source_type == 'faq':
+            format_info['has_faq'] = True
         elif source_type == 'forum':
             format_info['has_forum'] = True
         
@@ -131,6 +145,9 @@ def detect_chunk_format(chunks: list) -> Dict[str, Any]:
         
         if 'quality_score' in chunk:
             format_info['has_quality_scores'] = True
+        
+        if 'priority' in chunk:
+            format_info['has_priority'] = True
     
     return format_info
 
@@ -214,9 +231,12 @@ def doc_generator(chunks: list, index_name: str):
         # Determine document ID and type
         source_type = chunk.get('source_type', 'rulebook')
         
+        # Generate document ID based on source type
         if source_type == 'forum':
             doc_id = f"forum_{chunk.get('qa_id', idx)}"
-        else:
+        elif source_type == 'faq':
+            doc_id = f"faq_{chunk.get('faq_id', idx)}"
+        else:  # rulebook
             page = chunk.get('page', 0)
             doc_id = f"rulebook_{page}_{idx}"
         
@@ -228,7 +248,8 @@ def doc_generator(chunks: list, index_name: str):
             "embedding": embedding,
             "quality_score": chunk.get('quality_score', 50.0),
             "extraction_confidence": chunk.get('extraction_confidence', 0.5),
-            "extraction_method": chunk.get('extraction_method', 'unknown')
+            "extraction_method": chunk.get('extraction_method', 'unknown'),
+            "priority": chunk.get('priority', 50)  # Default to rulebook priority
         }
         
         # Add rulebook-specific fields
@@ -249,6 +270,15 @@ def doc_generator(chunks: list, index_name: str):
                 "url": chunk.get('url', ''),
                 "answer_user": chunk.get('answer_user', ''),
                 "qa_id": chunk.get('qa_id', '')
+            })
+        
+        # Add FAQ-specific fields
+        elif source_type == 'faq':
+            doc_source.update({
+                "faq_id": chunk.get('faq_id', f"faq_{idx}"),
+                "source_file": chunk.get('source_file', ''),
+                "answer": chunk.get('answer', ''),  # FAQ answer field
+                "section": chunk.get('section', '')  # FAQ category/section
             })
         
         yield {
@@ -287,6 +317,11 @@ def print_index_statistics(es: Elasticsearch, index_name: str):
     forum_docs = es.count(
         index=index_name,
         body={"query": {"term": {"source_type": "forum"}}}
+    )['count']
+    
+    faq_docs = es.count(
+        index=index_name,
+        body={"query": {"term": {"source_type": "faq"}}}
     )['count']
     
     # Quality statistics for rulebook chunks
@@ -329,13 +364,16 @@ def print_index_statistics(es: Elasticsearch, index_name: str):
     print(f"Index name: {index_name}")
     print(f"Total documents: {total_docs}")
     
+    if faq_docs > 0:
+        print(f"\nFAQ Q&A pairs: {faq_docs} ({faq_docs/total_docs*100:.1f}%) [Priority: 75]")
+    
     if rulebook_docs > 0:
-        print(f"\nRulebook chunks: {rulebook_docs} ({rulebook_docs/total_docs*100:.1f}%)")
+        print(f"\nRulebook chunks: {rulebook_docs} ({rulebook_docs/total_docs*100:.1f}%) [Priority: 50]")
         print(f"  High quality (≥80): {high_quality_docs} ({high_quality_docs/rulebook_docs*100:.1f}%)")
         print(f"  High confidence (≥0.8): {high_confidence_docs} ({high_confidence_docs/rulebook_docs*100:.1f}%)")
     
     if forum_docs > 0:
-        print(f"\nForum Q&A pairs: {forum_docs} ({forum_docs/total_docs*100:.1f}%)")
+        print(f"\nForum Q&A pairs: {forum_docs} ({forum_docs/total_docs*100:.1f}%) [Priority: 30]")
     
     print(f"{'='*70}\n")
 

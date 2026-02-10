@@ -39,6 +39,10 @@
                                     <input type="checkbox" id="semantic-toggle" name="use_semantic">
                                     <span>🧠 Semantic Analysis</span>
                                 </label>
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="faq-toggle" name="include_faq">
+                                    <span>📋 Include Official FAQ</span>
+                                </label>
                             </div>
                             <button type="submit" id="ask-button">Ask Question</button>
                         </div>
@@ -63,6 +67,18 @@
                 
                 <div class="answer-content" id="answer-content">
                     <!-- Answer text will be inserted here -->
+                </div>
+                
+                <div id="faq-metadata" class="faq-metadata" style="display: none;">
+                    <h4>📋 Official FAQ Entry</h4>
+                    <div class="faq-details">
+                        <div class="faq-item">
+                            <strong>Original Question:</strong> <span id="faq-question" style="font-style: italic;">-</span>
+                        </div>
+                        <div class="faq-item">
+                            <strong>Section:</strong> <span id="faq-section">-</span>
+                        </div>
+                    </div>
                 </div>
                 
                 <div id="forum-metadata" class="forum-metadata" style="display: none;">

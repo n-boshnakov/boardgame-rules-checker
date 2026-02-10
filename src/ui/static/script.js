@@ -3,6 +3,7 @@ const questionForm = document.getElementById('question-form');
 const questionInput = document.getElementById('question-input');
 const semanticToggle = document.getElementById('semantic-toggle');
 const dualSourceToggle = document.getElementById('dual-source-toggle');
+const faqToggle = document.getElementById('faq-toggle');
 const askButton = document.getElementById('ask-button');
 const loadingSection = document.getElementById('loading');
 const answerSection = document.getElementById('answer-section');
@@ -47,6 +48,7 @@ questionForm.addEventListener('submit', async (e) => {
                 question: question,
                 use_semantic: semanticToggle.checked,
                 use_dual_source: dualSourceToggle.checked,
+                include_faq: faqToggle.checked,
                 forum_weight: 0.45  // Slightly favors rulebook (0.55)
             })
         });
@@ -84,10 +86,20 @@ function displayAnswer(data) {
     // Answer text
     answerContent.textContent = data.answer;
     
-    // Source and page info
-    // Note: page is from the highest-scoring chunk that contributed to the answer
-    sourceBadge.textContent = capitalizeFirst(data.source);
-    pageInfo.textContent = data.page ? `Page: ${data.page}` : 'Page: N/A';
+    // Source badge - use "Official FAQ" for FAQ source
+    if (data.source === 'faq') {
+        sourceBadge.textContent = 'Official FAQ';
+    } else {
+        sourceBadge.textContent = capitalizeFirst(data.source);
+    }
+    
+    // Page info - only show for rulebook, hide for FAQ/Forum
+    if (data.source === 'rulebook' && data.page) {
+        pageInfo.textContent = `Page: ${data.page}`;
+        pageInfo.style.display = 'inline-block';
+    } else {
+        pageInfo.style.display = 'none';
+    }
     
     // Confidence badge
     const confidence = data.confidence * 100;
@@ -103,6 +115,16 @@ function displayAnswer(data) {
     
     // Quality scores
     displayScores(data.scores, data.score_weights);
+    
+    // FAQ metadata (if available)
+    if (data.faq_metadata && data.source === 'faq') {
+        displayFAQMetadata(data.faq_metadata);
+    } else {
+        const faqMetadataSection = document.getElementById('faq-metadata');
+        if (faqMetadataSection) {
+            faqMetadataSection.style.display = 'none';
+        }
+    }
     
     // Forum metadata (if available)
     if (data.forum_metadata && data.source === 'forum') {
@@ -250,7 +272,7 @@ function displayChunks(chunks) {
             header.appendChild(score);
         }
         
-        // Metadata - different for forum vs rulebook chunks
+        // Metadata - different for forum vs FAQ vs rulebook chunks
         const meta = document.createElement('div');
         meta.className = 'chunk-meta';
         
@@ -260,6 +282,17 @@ function displayChunks(chunks) {
             const answerBy = chunk.answered_by || 'Unknown';
             const threadUrl = chunk.thread_url || '#';
             let metaContent = `<strong>Original Question:</strong> <em>${originalQuestion}</em><br><strong>Answered by:</strong> ${answerBy} | <a href="${threadUrl}" target="_blank">View Thread</a>`;
+            
+            // Add matched entity types if available
+            if (chunk.matched_entity_types && chunk.matched_entity_types.length > 0) {
+                metaContent += `<br><strong>Matched Entities:</strong> <span style="color: #28a745;">${chunk.matched_entity_types.join(', ')}</span>`;
+            }
+            meta.innerHTML = metaContent;
+        } else if (chunk.source_type === 'faq') {
+            // FAQ chunk: show original question and section
+            const originalQuestion = chunk.question || 'N/A';
+            const section = chunk.section || 'N/A';
+            let metaContent = `<strong>Original Question:</strong> <em>${originalQuestion}</em><br><strong>Section:</strong> ${section}`;
             
             // Add matched entity types if available
             if (chunk.matched_entity_types && chunk.matched_entity_types.length > 0) {
@@ -423,6 +456,21 @@ function displaySpellcheckCorrections(corrections, originalQuestion, correctedQu
 function showError(message) {
     errorMessage.textContent = message;
     errorSection.style.display = 'block';
+}
+
+// Display FAQ metadata
+function displayFAQMetadata(metadata) {
+    const section = document.getElementById('faq-metadata');
+    const questionEl = document.getElementById('faq-question');
+    const sectionEl = document.getElementById('faq-section');
+    
+    // Display original FAQ question
+    questionEl.textContent = metadata.question || 'N/A';
+    
+    // Display FAQ section/category
+    sectionEl.textContent = metadata.section || 'General';
+    
+    section.style.display = 'block';
 }
 
 // Display forum metadata

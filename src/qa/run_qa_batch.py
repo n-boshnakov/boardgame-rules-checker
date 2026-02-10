@@ -73,7 +73,8 @@ def main(args):
                 question,
                 top_k=25,
                 forum_weight=args.forum_weight,
-                use_semantic=args.use_semantic_analysis
+                use_semantic=args.use_semantic_analysis,
+                include_faq=args.include_faq
             )
             
             if answer_source == 'none' or not chunks:
@@ -103,7 +104,8 @@ def main(args):
                 search_type="hybrid", 
                 hybrid_weight=0.85,
                 use_semantic=use_semantic,
-                source_type="rulebook"  # Explicit filter to rulebook
+                source_type="rulebook",  # Explicit filter to rulebook
+                include_faq=args.include_faq
             )
             
             if not retrieved_chunks:
@@ -307,6 +309,13 @@ Examples:
         type=float,
         default=0.45,
         help="Weight for forum results in dual-source mode (0-1, default: 0.45 - slightly favors rulebook)"
+    )
+    parser.add_argument(
+        "--use-faq",
+        dest="include_faq",
+        action="store_true",
+        default=False,
+        help="Include FAQ results in search (default: False - hybrid search only)"
     )
     
     args = parser.parse_args()

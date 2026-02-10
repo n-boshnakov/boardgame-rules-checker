@@ -80,9 +80,23 @@ class Embedder:
 
 
 if __name__ == '__main__':
-    # Default usage: embed chunks from standard location
-    embedder = Embedder()
-    embedder.embed_chunks(
-        chunks_file='data/processed/chunks.pkl',
-        output_file='data/processed/chunks_embeddings.parquet'
-    )
+    import sys
+    
+    if len(sys.argv) > 1:
+        # Use command line argument
+        input_file = sys.argv[1]
+        # Generate output filename by replacing .pkl with _embeddings.parquet
+        output_file = input_file.replace('.pkl', '_embeddings.parquet')
+        
+        embedder = Embedder()
+        embedder.embed_chunks(
+            chunks_file=input_file,
+            output_file=output_file
+        )
+    else:
+        # Default usage: embed chunks from standard location
+        embedder = Embedder()
+        embedder.embed_chunks(
+            chunks_file='data/processed/chunks.pkl',
+            output_file='data/processed/chunks_embeddings.parquet'
+        )

@@ -141,7 +141,8 @@ class RulebookRetriever:
         # Normalize to unit vectors for cosine similarity stability
         return self.model.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
 
-    def _vector_search_script(self, query_vec: np.ndarray, size: int, section: Optional[str] = None, source_type: Optional[str] = None):
+    def _vector_search_script(self, query_vec: np.ndarray, size: int = 25, section: Optional[str] = None, source_type: Optional[str] = None, include_faq: bool = False, exclude_forum: bool = False):
+        """Execute vector search using script_score with cosine similarity."""
         script_query = {
             "script_score": {
                 "query": {"bool": {"must": []}},
@@ -155,12 +156,22 @@ class RulebookRetriever:
         if section:
             filters.append({"term": {"section": section}})
         if source_type:
+            # Specific source type requested
             filters.append({"term": {"source_type": source_type}})
+        else:
+            # No specific source type - apply include/exclude logic
+            must_not_filters = []
+            if not include_faq:
+                must_not_filters.append({"term": {"source_type": "faq"}})
+            if exclude_forum:
+                must_not_filters.append({"term": {"source_type": "forum"}})
+            if must_not_filters:
+                filters.append({"bool": {"must_not": must_not_filters}})
         if filters:
             script_query["script_score"]["query"]["bool"]["filter"] = filters
         return self.es.search(index=ES_INDEX, body={"size": size, "query": script_query})
 
-    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85, use_semantic: bool = None, source_type: Optional[str] = None, skip_entity_boosting: bool = False) -> List[Dict]:
+    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85, use_semantic: bool = None, source_type: Optional[str] = None, skip_entity_boosting: bool = False, include_faq: bool = False, exclude_forum: bool = False, skip_priority_boost: bool = False) -> List[Dict]:
         # Spellcheck the query first
         corrected_query, corrections = self.spellcheck_question(query)
         if corrections:
@@ -202,7 +213,7 @@ class RulebookRetriever:
             return parsed
 
         if search_type == "vector":
-            res = self._vector_search_script(query_vec, size=top_k, section=section, source_type=source_type)
+            res = self._vector_search_script(query_vec, size=top_k, section=section, source_type=source_type, include_faq=include_faq, exclude_forum=exclude_forum)
             combined = parse_hits(res)
 
         elif search_type == "keyword":
@@ -224,6 +235,15 @@ class RulebookRetriever:
                 filters.append({"term": {"section": section}})
             if source_type:
                 filters.append({"term": {"source_type": source_type}})
+            else:
+                # Apply FAQ/forum filtering if specified
+                must_not_filters = []
+                if not include_faq:
+                    must_not_filters.append({"term": {"source_type": "faq"}})
+                if exclude_forum:
+                    must_not_filters.append({"term": {"source_type": "forum"}})
+                if must_not_filters:
+                    filters.append({"bool": {"must_not": must_not_filters}})
             if filters:
                 keyword_query["bool"]["filter"] = filters
             res = self.es.search(index=ES_INDEX, body={"size": top_k, "query": keyword_query})
@@ -232,7 +252,7 @@ class RulebookRetriever:
         elif search_type == "hybrid":
             # Vector side: fetch more for merging (balanced, low overhead)
             vec_size = max(top_k * 5, 25)
-            vector_res = self._vector_search_script(query_vec, size=vec_size, section=section, source_type=source_type)
+            vector_res = self._vector_search_script(query_vec, size=vec_size, section=section, source_type=source_type, include_faq=include_faq, exclude_forum=exclude_forum)
             vector_hits = vector_res.get("hits", {}).get("hits", [])
 
             # Keyword side: prefer phrasing + and-operator; same pool size
@@ -253,6 +273,15 @@ class RulebookRetriever:
                 filters.append({"term": {"section": section}})
             if source_type:
                 filters.append({"term": {"source_type": source_type}})
+            else:
+                # Apply FAQ/forum filtering if specified
+                must_not_filters = []
+                if not include_faq:
+                    must_not_filters.append({"term": {"source_type": "faq"}})
+                if exclude_forum:
+                    must_not_filters.append({"term": {"source_type": "forum"}})
+                if must_not_filters:
+                    filters.append({"bool": {"must_not": must_not_filters}})
             if filters:
                 keyword_query["bool"]["filter"] = filters
             keyword_res = self.es.search(index=ES_INDEX, body={"size": vec_size, "query": keyword_query})
@@ -344,6 +373,21 @@ class RulebookRetriever:
             # Re-sort after boosting
             combined.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         
+        # Apply priority-based score boosting (FAQ > Rulebook > Forum)
+        # Priority values: FAQ=75, Rulebook=50, Forum=30
+        # Boost multiplier: priority / 50 (base priority)
+        # Skip in dual-source mode to allow fair comparison between sources
+        if not skip_priority_boost:
+            for chunk in combined:
+                priority = chunk.get("priority", 50)
+                # Apply priority boost: higher priority sources get higher scores
+                priority_multiplier = priority / 50.0  # FAQ=1.5x, Rulebook=1.0x, Forum=0.6x
+                chunk["score"] = chunk.get("score", 0.0) * priority_multiplier
+                chunk["priority_multiplier"] = priority_multiplier
+            
+            # Re-sort after priority boosting
+            combined.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        
         # Apply entity-based score boosting for better semantic matching
         # Skip if explicitly disabled (e.g., in dual-source mode for rulebook to avoid unfair advantage)
         if should_use_semantic and self.semantic_analyzer and not skip_entity_boosting:
@@ -419,7 +463,7 @@ class RulebookRetriever:
         # Re-sort after entity boosting
         chunks.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     
-    def search_dual_source(self, query: str, top_k: int = 5, forum_weight: float = 0.45, use_semantic: bool = None) -> tuple:
+    def search_dual_source(self, query: str, top_k: int = 5, forum_weight: float = 0.45, use_semantic: bool = None, include_faq: bool = False) -> tuple:
         """Search both forum Q&A and rulebook, returning best source.
         
         Args:
@@ -427,6 +471,7 @@ class RulebookRetriever:
             top_k: Number of results per source
             forum_weight: Weight for forum results (0-1), rulebook gets (1-weight)
             use_semantic: Enable semantic query expansion (None = use instance default)
+            include_faq: Include FAQ results in search (default: True)
         
         Returns:
             Tuple: (chunks, source, forum_confidence, rulebook_confidence)
@@ -450,20 +495,27 @@ class RulebookRetriever:
             top_k=top_k, 
             search_type="vector",  # Pure semantic for question matching
             use_semantic=False,  # No query expansion for forum
-            source_type="forum"  # Filter to forum only
+            source_type="forum",  # Filter to forum only
+            include_faq=False,  # Forum search doesn't include FAQ
+            skip_priority_boost=True  # Skip priority boost for fair comparison
         )
         
-        # Search rulebook with hybrid approach
+        # Search rulebook + FAQ (if enabled) with hybrid approach
+        # When include_faq=True, search both rulebook and FAQ chunks together
+        # Exclude forum chunks to keep sources separate
         # Disable entity boosting for rulebook to prevent unfair advantage over forum
-        print(f"[DualSearch] Searching rulebook...")
+        print(f"[DualSearch] Searching rulebook{' + FAQ' if include_faq else ''}...")
         rulebook_results = self.search(
             query,
             top_k=top_k,
             search_type="hybrid",
             hybrid_weight=0.85,
             use_semantic=should_use_semantic,
-            source_type="rulebook",  # Filter to rulebook only
-            skip_entity_boosting=True  # Disable entity boosting in dual-source mode
+            source_type="rulebook" if not include_faq else None,  # Allow FAQ when enabled
+            skip_entity_boosting=True,  # Disable entity boosting in dual-source mode
+            include_faq=include_faq,
+            exclude_forum=True,  # Always exclude forum from rulebook search
+            skip_priority_boost=True  # Skip priority boost for fair comparison
         )
         
         # Calculate confidence scores
@@ -501,22 +553,35 @@ class RulebookRetriever:
         # This ensures forum has fair chance when questions match well
         
         if not forum_results and not rulebook_results:
-            return [], "none", 0.0, 0.0
+            return [], "none", 0.0, 0.0, None
+        
+        # Helper function to apply priority boost after source selection
+        def apply_priority_boost(results):
+            """Apply priority boost to results and re-sort."""
+            for chunk in results:
+                priority = chunk.get("priority", 50)
+                priority_multiplier = priority / 50.0  # FAQ=1.5x, Rulebook=1.0x, Forum=0.6x
+                chunk["score"] = chunk.get("score", 0.0) * priority_multiplier
+                chunk["priority_multiplier"] = priority_multiplier
+            return sorted(results, key=lambda x: x.get("score", 0.0), reverse=True)
         
         # Use weighted scores for decision
         if forum_weighted > rulebook_weighted:
             # Forum has higher weighted score - use it
             print(f"[DualSearch] Selected: Forum (weighted {forum_weighted:.3f} > {rulebook_weighted:.3f})")
+            forum_results = apply_priority_boost(forum_results)
             return forum_results, "forum", forum_confidence, rulebook_confidence, None
         elif rulebook_results:
             # Rulebook has higher or equal weighted score - use it
             print(f"[DualSearch] Selected: Rulebook (weighted {rulebook_weighted:.3f} >= {forum_weighted:.3f})")
             # Include top forum question for reference when rulebook is selected
             related_forum_question = forum_results[0].get('text') if forum_results else None
+            rulebook_results = apply_priority_boost(rulebook_results)
             return rulebook_results, "rulebook", forum_confidence, rulebook_confidence, related_forum_question
         elif forum_results:
             # Only forum has results
             print(f"[DualSearch] Selected: Forum (only source available)")
+            forum_results = apply_priority_boost(forum_results)
             return forum_results, "forum", forum_confidence, rulebook_confidence, None
         else:
             return [], "none", 0.0, 0.0, None

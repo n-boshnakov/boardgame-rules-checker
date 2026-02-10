@@ -5,20 +5,21 @@ Flexible script that can merge chunks from any combination of sources:
 - PDF chunks only
 - OCR chunks only  
 - PDF + OCR chunks
-- Forum Q&A pairs only
-- PDF + Forum
-- OCR + Forum
-- PDF + OCR + Forum (all three)
+- FAQ Q&A pairs (official)
+- Forum Q&A pairs (community)
+- Any combination of the above
+
+Priority order: FAQ (75) > Rulebook (50) > Forum (30)
 
 Usage:
     # Merge PDF + OCR
     python src/parsers/merge_chunks_universal.py --pdf data/processed/chunks.pkl --ocr data/processed/chunks_ocr_corrected.pkl --output data/processed/chunks_merged.pkl
     
-    # Merge PDF + Forum
-    python src/parsers/merge_chunks_universal.py --pdf data/processed/chunks.pkl --forum data/processed/forum_qa/forum_qa_pairs.json --output data/processed/chunks_with_forum.pkl
+    # Merge all official sources (PDF + OCR + FAQ)
+    python src/parsers/merge_chunks_universal.py --pdf chunks.pkl --ocr chunks_ocr.pkl --faq faq_qa_pairs.json --output chunks_complete.pkl
     
-    # Merge all three sources
-    python src/parsers/merge_chunks_universal.py --pdf data/processed/chunks.pkl --ocr data/processed/chunks_ocr_corrected.pkl --forum data/processed/forum_qa/forum_qa_pairs.json --output data/processed/chunks_unified.pkl
+    # Full merge (all sources including forum)
+    python src/parsers/merge_chunks_universal.py --pdf chunks.pkl --ocr chunks_ocr.pkl --faq faq.json --forum forum.json --output chunks_all.pkl
     
     # Just reformat a single source
     python src/parsers/merge_chunks_universal.py --pdf data/processed/chunks.pkl --output data/processed/chunks_formatted.pkl
@@ -193,6 +194,7 @@ def merge_pdf_ocr_chunks(
                 # Different topics - keep both as semantic variants
                 pdf_chunk_copy = pdf_chunk.copy()
                 pdf_chunk_copy['extraction_method'] = 'pdf'
+                pdf_chunk_copy['priority'] = 50  # Rulebook priority
                 pdf_chunk_copy['quality_score'] = pdf_quality
                 pdf_chunk_copy['extraction_confidence'] = calculate_extraction_confidence(pdf_chunk_copy)
                 pdf_chunk_copy['semantic_variant'] = True
@@ -205,6 +207,7 @@ def merge_pdf_ocr_chunks(
                 # Keep PDF version (higher or equal quality)
                 chunk = pdf_chunk.copy()
                 chunk['extraction_method'] = 'pdf'
+                chunk['priority'] = 50  # Rulebook priority
                 chunk['quality_score'] = pdf_quality
                 chunk['extraction_confidence'] = calculate_extraction_confidence(chunk)
                 chunk['source_type'] = 'rulebook'
@@ -216,6 +219,7 @@ def merge_pdf_ocr_chunks(
                 # Keep OCR version (higher quality)
                 chunk = ocr_chunk.copy()
                 chunk['extraction_method'] = 'ocr'
+                chunk['priority'] = 50  # Rulebook priority
                 chunk['quality_score'] = ocr_quality
                 chunk['extraction_confidence'] = calculate_extraction_confidence(chunk)
                 chunk['source_type'] = 'rulebook'
@@ -227,6 +231,7 @@ def merge_pdf_ocr_chunks(
             # No match - keep PDF chunk as unique
             chunk = pdf_chunk.copy()
             chunk['extraction_method'] = 'pdf'
+            chunk['priority'] = 50  # Rulebook priority
             chunk['quality_score'] = pdf_quality
             chunk['extraction_confidence'] = calculate_extraction_confidence(chunk)
             chunk['source_type'] = 'rulebook'
@@ -238,6 +243,7 @@ def merge_pdf_ocr_chunks(
         if ocr_idx not in used_ocr_indices:
             chunk = ocr_chunk.copy()
             chunk['extraction_method'] = 'ocr'
+            chunk['priority'] = 50  # Rulebook priority
             chunk['quality_score'] = calculate_quality_score(chunk['text'])
             chunk['extraction_confidence'] = calculate_extraction_confidence(chunk)
             chunk['source_type'] = 'rulebook'
@@ -276,6 +282,8 @@ def load_pdf_chunks(path: str) -> List[Dict]:
             chunk['extraction_method'] = 'pdf'
         if 'source_type' not in chunk:
             chunk['source_type'] = 'rulebook'
+        if 'priority' not in chunk:
+            chunk['priority'] = 50  # Rulebook has medium priority
         if 'quality_score' not in chunk:
             chunk['quality_score'] = calculate_quality_score(chunk.get('text', ''))
         if 'extraction_confidence' not in chunk:
@@ -297,6 +305,8 @@ def load_ocr_chunks(path: str) -> List[Dict]:
             chunk['extraction_method'] = 'ocr'
         if 'source_type' not in chunk:
             chunk['source_type'] = 'rulebook'
+        if 'priority' not in chunk:
+            chunk['priority'] = 50  # Rulebook has medium priority
         if 'quality_score' not in chunk:
             chunk['quality_score'] = calculate_quality_score(chunk.get('text', ''))
         if 'extraction_confidence' not in chunk:
@@ -322,6 +332,7 @@ def load_forum_chunks(path: str) -> List[Dict]:
             'answer': qa['answer'],  # Answer text
             'source_type': 'forum',
             'extraction_method': 'forum_scraper',
+            'priority': 30,  # Forum has lowest priority
             'quality_score': qa.get('metadata', {}).get('useful_answer_count', 0) * 10,  # Scale to 0-100
             'extraction_confidence': min(1.0, qa.get('metadata', {}).get('useful_answer_count', 0) / 10),
             'thread_id': qa['thread_id'],
@@ -335,8 +346,41 @@ def load_forum_chunks(path: str) -> List[Dict]:
         }
         forum_chunks.append(chunk)
     
-    print(f"[Merger] Processed {len(forum_chunks)} forum chunks")
+    print(f"[Merger] Processed {len(forum_chunks)} forum chunks (priority: 30)")
     return forum_chunks
+
+
+def load_faq_chunks(path: str) -> List[Dict]:
+    """Load official FAQ Q&A pairs from manually created JSON file and convert to chunk format."""
+    print(f"\n[Merger] Loading official FAQ Q&A pairs from {path}...")
+    
+    with open(path, 'r', encoding='utf-8') as f:
+        faq_data = json.load(f)
+    
+    print(f"[Merger] Found {len(faq_data)} FAQ Q&A pairs")
+    
+    # Convert to chunk format
+    faq_chunks = []
+    for qa in faq_data:
+        chunk = {
+            'text': qa['question'],  # Question text for search
+            'answer': qa['answer'],  # Answer text
+            'source_type': 'faq',
+            'extraction_method': qa.get('extraction_method', 'manual'),
+            'priority': qa.get('priority', 75),  # FAQ has high priority
+            'quality_score': qa.get('quality_score', 75.0),
+            'extraction_confidence': qa.get('extraction_confidence', 1.0),
+            'faq_id': qa.get('faq_id', f"faq_{len(faq_chunks)+1}"),
+            'source_file': qa.get('source_file', ''),
+            'source': qa.get('source', 'official_faq'),
+            'section': qa.get('section', ''),  # Topic/category section
+            'page': None,  # FAQ doesn't have page numbers
+            'doc_type': qa.get('doc_type', 'faq_qa')
+        }
+        faq_chunks.append(chunk)
+    
+    print(f"[Merger] Processed {len(faq_chunks)} FAQ chunks (priority: 75)")
+    return faq_chunks
 
 
 def save_merged_chunks(chunks: List[Dict], output_path: str, generate_report: bool = True):
@@ -365,11 +409,17 @@ def save_merged_chunks(chunks: List[Dict], output_path: str, generate_report: bo
             
             # Overall statistics
             rulebook_chunks = [c for c in chunks if c.get('source_type') == 'rulebook']
+            faq_chunks = [c for c in chunks if c.get('source_type') == 'faq']
             forum_chunks = [c for c in chunks if c.get('source_type') == 'forum']
             
             f.write(f"Total chunks: {len(chunks)}\n")
-            f.write(f"  Rulebook: {len(rulebook_chunks)}\n")
-            f.write(f"  Forum: {len(forum_chunks)}\n\n")
+            if faq_chunks:
+                f.write(f"  FAQ: {len(faq_chunks)} (priority: 75)\n")
+            if rulebook_chunks:
+                f.write(f"  Rulebook: {len(rulebook_chunks)} (priority: 50)\n")
+            if forum_chunks:
+                f.write(f"  Forum: {len(forum_chunks)} (priority: 30)\n")
+            f.write("\n")
             
             # Quality breakdown for rulebook chunks
             if rulebook_chunks:
@@ -406,7 +456,14 @@ def save_merged_chunks(chunks: List[Dict], output_path: str, generate_report: bo
                 forum_qualities = [c.get('quality_score', 0) for c in forum_chunks]
                 f.write("Forum Q&A Quality:\n")
                 f.write(f"  Mean quality score: {np.mean(forum_qualities):.2f}\n")
-                f.write(f"  High quality (≥70): {sum(1 for q in forum_qualities if q >= 70)} ({sum(1 for q in forum_qualities if q >= 70)/len(forum_qualities)*100:.1f}%)\n")
+                f.write(f"  High quality (≥70): {sum(1 for q in forum_qualities if q >= 70)} ({sum(1 for q in forum_qualities if q >= 70)/len(forum_qualities)*100:.1f}%)\n\n")
+            
+            # FAQ chunk statistics
+            if faq_chunks:
+                f.write("Official FAQ Q&A:\n")
+                f.write(f"  Total FAQ pairs: {len(faq_chunks)}\n")
+                f.write(f"  Mean quality score: {np.mean([c.get('quality_score', 0) for c in faq_chunks]):.2f}\n")
+                f.write(f"  Mean confidence: {np.mean([c.get('extraction_confidence', 0) for c in faq_chunks]):.2%}\n\n")
         
         print(f"[Merger] Saved quality report to {report_path}")
 
@@ -421,11 +478,11 @@ Examples:
   # Merge PDF + OCR
   python merge_chunks_universal.py --pdf chunks.pkl --ocr chunks_ocr.pkl -o chunks_merged.pkl
   
-  # Merge PDF + Forum
-  python merge_chunks_universal.py --pdf chunks.pkl --forum forum_qa_pairs.json -o chunks_with_forum.pkl
+  # Merge PDF + FAQ (with official FAQ)
+  python merge_chunks_universal.py --pdf chunks.pkl --faq faq.json -o chunks_with_faq.pkl
   
-  # Merge all three sources
-  python merge_chunks_universal.py --pdf chunks.pkl --ocr chunks_ocr.pkl --forum forum_qa_pairs.json -o chunks_unified.pkl
+  # Merge all sources (full documentation)
+  python merge_chunks_universal.py --pdf chunks.pkl --ocr chunks_ocr.pkl --faq faq.json --forum forum.json -o chunks_complete.pkl
   
   # Just reformat a single source
   python merge_chunks_universal.py --pdf chunks.pkl -o chunks_formatted.pkl
@@ -434,6 +491,7 @@ Examples:
     
     parser.add_argument('--pdf', type=str, help='Path to PDF chunks pickle file')
     parser.add_argument('--ocr', type=str, help='Path to OCR chunks pickle file')
+    parser.add_argument('--faq', type=str, help='Path to FAQ Q&A pairs JSON file (manual or parsed)')
     parser.add_argument('--forum', type=str, help='Path to forum Q&A pairs JSON file')
     parser.add_argument('-o', '--output', type=str, required=True, help='Output path for merged chunks')
     parser.add_argument('--similarity-threshold', type=float, default=80.0, help='Similarity threshold for deduplication (default: 80.0)')
@@ -442,8 +500,8 @@ Examples:
     args = parser.parse_args()
     
     # Validate inputs
-    if not any([args.pdf, args.ocr, args.forum]):
-        print("[Merger] Error: At least one source (--pdf, --ocr, or --forum) must be specified")
+    if not any([args.pdf, args.ocr, args.faq, args.forum]):
+        print("[Merger] Error: At least one source (--pdf, --ocr, --faq, or --forum) must be specified")
         sys.exit(1)
     
     print("="*70)
@@ -478,6 +536,14 @@ Examples:
         # Only OCR chunks provided
         all_chunks.extend(ocr_chunks)
     
+    # Load FAQ chunks if specified
+    if args.faq:
+        if not os.path.exists(args.faq):
+            print(f"[Merger] Error: FAQ Q&A file not found: {args.faq}")
+            sys.exit(1)
+        faq_chunks = load_faq_chunks(args.faq)
+        all_chunks.extend(faq_chunks)
+    
     # Load forum chunks if specified
     if args.forum:
         if not os.path.exists(args.forum):
@@ -493,10 +559,14 @@ Examples:
     print(f"Total chunks: {len(all_chunks)}")
     
     rulebook_count = sum(1 for c in all_chunks if c.get('source_type') == 'rulebook')
+    faq_count = sum(1 for c in all_chunks if c.get('source_type') == 'faq')
     forum_count = sum(1 for c in all_chunks if c.get('source_type') == 'forum')
     
+    if faq_count > 0:
+        print(f"  FAQ Q&A pairs: {faq_count} (priority: 75)")
+    
     if rulebook_count > 0:
-        print(f"  Rulebook chunks: {rulebook_count}")
+        print(f"  Rulebook chunks: {rulebook_count} (priority: 50)")
         pdf_count = sum(1 for c in all_chunks if c.get('extraction_method') == 'pdf')
         ocr_count = sum(1 for c in all_chunks if c.get('extraction_method') == 'ocr')
         if pdf_count > 0:
@@ -505,8 +575,9 @@ Examples:
             print(f"    From OCR: {ocr_count} ({ocr_count/rulebook_count*100:.1f}%)")
     
     if forum_count > 0:
-        print(f"  Forum Q&A pairs: {forum_count}")
+        print(f"  Forum Q&A pairs: {forum_count} (priority: 30)")
     
+    print(f"\nPriority order: FAQ (75) > Rulebook (50) > Forum (30)")
     print(f"{'='*70}\n")
     
     # Save merged chunks
