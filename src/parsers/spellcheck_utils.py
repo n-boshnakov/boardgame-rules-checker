@@ -59,19 +59,126 @@ def correct_spelling(
                         word_fragments[fragment] = full_word
         except Exception as e:
             print(f"Warning: Could not read word_fragments file: {e}")
+    
+    # Common typo mappings for short ambiguous words
+    typo_map = {
+        "od": "do",
+        "eck": "deck"
+    }
+    
     checked_words = []
     def correct_word(word):
         if not word.isalpha():
             return word, word
+        
         # Check unique terms (case-insensitive) - NEVER correct these
         if word.lower() in unique_terms_lower:
             return word, word
+        
+        # Check common typo mappings (for short ambiguous words)
+        if word.lower() in typo_map:
+            corrected = typo_map[word.lower()]
+            # Preserve capitalization
+            if word.isupper():
+                return word, corrected.upper()
+            elif word[0].isupper():
+                return word, corrected.capitalize()
+            else:
+                return word, corrected
+        
+        # Check if word is very close to a unique term (likely typo of game term)
+        # This handles cases like "Stalers" which should be "Stalkers"
+        # But avoid correcting valid words to similar game terms (e.g., "dies" → "die")
+        from difflib import get_close_matches
+        
+        # First check if the word itself is already known to be correct
+        word_is_valid = word.lower() not in spell.unknown([word.lower()])
+        
+        # Only apply fuzzy matching to unknown words or check for game-specific terms
+        if not word_is_valid:
+            close_matches = get_close_matches(word.lower(), unique_terms_lower, n=1, cutoff=0.85)
+            if close_matches:
+                matched_term_lower = close_matches[0]
+                # Make sure the match is actually better than the word itself
+                # (e.g., "staler" is valid but "stalker" is more relevant for game queries)
+                if matched_term_lower != word.lower():
+                    for term in unique_terms:
+                        if term.lower() == matched_term_lower:
+                            # Preserve capitalization pattern from original word
+                            if word.isupper():
+                                return word, term.upper()
+                            elif word[0].isupper():
+                                return word, term.capitalize() if term[0].islower() else term
+                            else:
+                                return word, term.lower()
+                    return word, close_matches[0]
+        
         # Check word fragments first (exact match)
         if word in word_fragments:
             return word, word_fragments[word]
-        # No human corrections, only ignore unique terms and fragments
-        corrected = spell.correction(word)
-        return word, corrected if corrected else word
+        
+        # Check if word is in dictionary (no correction needed)
+        # BUT: Even if valid, check if there's a much closer game term match
+        word_is_valid = word.lower() not in spell.unknown([word.lower()])
+        
+        if word_is_valid:
+            # Word is technically valid, but check if a game term is a better match
+            # E.g., "staler" (valid) vs "Stalker" (game term), "od" (valid) vs "do" (common)
+            from difflib import get_close_matches
+            close_game_terms = get_close_matches(word.lower(), unique_terms_lower, n=1, cutoff=0.90)
+            if close_game_terms and close_game_terms[0] != word.lower():
+                # Found a very close game term - prefer it
+                matched_term_lower = close_game_terms[0]
+                for term in unique_terms:
+                    if term.lower() == matched_term_lower:
+                        # Preserve capitalization pattern
+                        if word.isupper():
+                            return word, term.upper()
+                        elif word[0].isupper():
+                            return word, term.capitalize() if term[0].islower() else term
+                        else:
+                            return word, term.lower()
+            # No close game term match - word is fine as-is
+            return word, word
+        
+        # Word is misspelled - get all candidates
+        candidates = spell.candidates(word.lower())
+        if not candidates or len(candidates) == 0:
+            return word, word
+        
+        # Quality check: Find best candidate based on similarity
+        from difflib import SequenceMatcher
+        
+        # For very short words (2-3 chars), use more lenient matching
+        # but also check for common short word typos
+        min_similarity = 0.5 if len(word) <= 3 else 0.65
+        
+        # Score each candidate
+        scored_candidates = []
+        for candidate in candidates:
+            similarity = SequenceMatcher(None, word.lower(), candidate).ratio()
+            # Prefer candidates that preserve more letters (e.g., "skip" over "sky" for "skp")
+            length_penalty = abs(len(word) - len(candidate)) * 0.1
+            score = similarity - length_penalty
+            scored_candidates.append((score, similarity, candidate))
+        
+        # Get best candidate
+        scored_candidates.sort(reverse=True, key=lambda x: x[0])
+        best_score, best_similarity, best_candidate = scored_candidates[0]
+        
+        # Require minimum similarity (lower for short words)
+        if best_similarity < min_similarity:
+            return word, word
+        
+        # Preserve original capitalization pattern
+        if word.isupper():
+            corrected = best_candidate.upper()
+        elif word[0].isupper():
+            corrected = best_candidate.capitalize()
+        else:
+            corrected = best_candidate
+        
+        return word, corrected
     tokens = re.findall(r"\w+|\W+", text)
     corrected_tokens = []
     for tok in tokens:
