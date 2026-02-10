@@ -14,7 +14,22 @@ MODEL_NAME = "BAAI/bge-m3"  # 1024 dims, better cross-domain
 
 class RulebookRetriever:
     def __init__(self, es_host: str = "http://localhost:9200", model_name: str = MODEL_NAME, use_reranker: bool = True, use_semantic_analysis: bool = False):
-        self.es = Elasticsearch(es_host, headers={"accept": "application/json", "content-type": "application/json"})
+        # Force v8 API compatibility by setting request headers directly on each call
+        # Using Elasticsearch 8.x client with API version compatibility
+        self.es = Elasticsearch(es_host)
+        
+        # Patch the client to add v8 compatibility headers to every request
+        original_perform_request = self.es.perform_request
+        def patched_perform_request(method, path, **kwargs):
+            # Force v8 API version on every request
+            if 'headers' not in kwargs:
+                kwargs['headers'] = {}
+            kwargs['headers']['accept'] = 'application/vnd.elasticsearch+json; compatible-with=8'
+            kwargs['headers']['content-type'] = 'application/vnd.elasticsearch+json; compatible-with=8'
+            return original_perform_request(method, path, **kwargs)
+        
+        self.es.perform_request = patched_perform_request
+        
         print(f"[Retriever] Loading embedding model: {model_name}")
         self.model = SentenceTransformer(model_name)
         self.use_reranker = use_reranker

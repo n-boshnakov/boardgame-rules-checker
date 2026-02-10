@@ -45,9 +45,10 @@ def main(args):
     # Use hybrid search by default; enable semantic analysis only when flag is provided
     use_semantic = args.use_semantic_analysis
 
-    # Initialize retriever with reranking enabled (CrossEncoder)
+    # Initialize retriever with reranking (can be disabled for isolated tests)
+    use_reranker = not args.no_rerank if hasattr(args, 'no_rerank') else True
     retriever = RulebookRetriever(
-        use_reranker=True,
+        use_reranker=use_reranker,
         use_semantic_analysis=use_semantic
     )
     
@@ -102,7 +103,7 @@ def main(args):
                 question, 
                 top_k=25, 
                 search_type="hybrid", 
-                hybrid_weight=0.85,
+                hybrid_weight=args.hybrid_weight,
                 use_semantic=use_semantic,
                 source_type="rulebook",  # Explicit filter to rulebook
                 include_faq=args.include_faq
@@ -316,6 +317,13 @@ Examples:
         action="store_true",
         default=False,
         help="Include FAQ results in search (default: False - hybrid search only)"
+    )
+    parser.add_argument(
+        "--no-rerank",
+        dest="no_rerank",
+        action="store_true",
+        default=False,
+        help="Disable cross-encoder reranking (for isolated hybrid weight testing)"
     )
     
     args = parser.parse_args()
