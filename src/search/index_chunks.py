@@ -48,7 +48,7 @@ MAPPING_TEMPLATE = {
             "text": {"type": "text"},
             "source_type": {"type": "keyword"},  # "rulebook", "faq", or "forum"
             "doc_type": {"type": "keyword"},
-            "priority": {"type": "integer"},  # 75 (faq) > 50 (rulebook) > 30 (forum)
+            "priority": {"type": "integer"},  # 60 (faq) > 50 (rulebook) > 30 (forum)
             "embedding": {
                 "type": "dense_vector",
                 "dims": EMBEDDING_DIMS,
@@ -365,7 +365,7 @@ def print_index_statistics(es: Elasticsearch, index_name: str):
     print(f"Total documents: {total_docs}")
     
     if faq_docs > 0:
-        print(f"\nFAQ Q&A pairs: {faq_docs} ({faq_docs/total_docs*100:.1f}%) [Priority: 75]")
+        print(f"\nFAQ Q&A pairs: {faq_docs} ({faq_docs/total_docs*100:.1f}%) [Priority: 60]")
     
     if rulebook_docs > 0:
         print(f"\nRulebook chunks: {rulebook_docs} ({rulebook_docs/total_docs*100:.1f}%) [Priority: 50]")

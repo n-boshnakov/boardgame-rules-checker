@@ -9,7 +9,7 @@ Flexible script that can merge chunks from any combination of sources:
 - Forum Q&A pairs (community)
 - Any combination of the above
 
-Priority order: FAQ (75) > Rulebook (50) > Forum (30)
+Priority order: FAQ (60) > Rulebook (50) > Forum (30)
 
 Usage:
     # Merge PDF + OCR
@@ -315,8 +315,13 @@ def load_ocr_chunks(path: str) -> List[Dict]:
     return chunks
 
 
-def load_forum_chunks(path: str) -> List[Dict]:
-    """Load forum Q&A pairs from JSON file and convert to chunk format."""
+def load_forum_chunks(path: str, priority: int = 30) -> List[Dict]:
+    """Load forum Q&A pairs from JSON file and convert to chunk format.
+    
+    Args:
+        path: Path to forum JSON file
+        priority: Priority value for forum chunks (default: 30, baseline rulebook=40)
+    """
     print(f"\n[Merger] Loading forum Q&A pairs from {path}...")
     
     with open(path, 'r', encoding='utf-8') as f:
@@ -332,7 +337,7 @@ def load_forum_chunks(path: str) -> List[Dict]:
             'answer': qa['answer'],  # Answer text
             'source_type': 'forum',
             'extraction_method': 'forum_scraper',
-            'priority': 30,  # Forum has lowest priority
+            'priority': priority,  # Use configurable priority
             'quality_score': qa.get('metadata', {}).get('useful_answer_count', 0) * 10,  # Scale to 0-100
             'extraction_confidence': min(1.0, qa.get('metadata', {}).get('useful_answer_count', 0) / 10),
             'thread_id': qa['thread_id'],
@@ -346,12 +351,18 @@ def load_forum_chunks(path: str) -> List[Dict]:
         }
         forum_chunks.append(chunk)
     
-    print(f"[Merger] Processed {len(forum_chunks)} forum chunks (priority: 30)")
+    boost_multiplier = priority / 50.0
+    print(f"[Merger] Processed {len(forum_chunks)} forum chunks (priority: {priority}, boost: {boost_multiplier:.1f}x)")
     return forum_chunks
 
 
-def load_faq_chunks(path: str) -> List[Dict]:
-    """Load official FAQ Q&A pairs from manually created JSON file and convert to chunk format."""
+def load_faq_chunks(path: str, priority: int = 45) -> List[Dict]:
+    """Load official FAQ Q&A pairs from manually created JSON file and convert to chunk format.
+    
+    Args:
+        path: Path to FAQ JSON file
+        priority: Priority value for FAQ chunks (default: 45, baseline rulebook=40)
+    """
     print(f"\n[Merger] Loading official FAQ Q&A pairs from {path}...")
     
     with open(path, 'r', encoding='utf-8') as f:
@@ -367,7 +378,7 @@ def load_faq_chunks(path: str) -> List[Dict]:
             'answer': qa['answer'],  # Answer text
             'source_type': 'faq',
             'extraction_method': qa.get('extraction_method', 'manual'),
-            'priority': qa.get('priority', 75),  # FAQ has high priority
+            'priority': priority,  # Use configurable priority
             'quality_score': qa.get('quality_score', 75.0),
             'extraction_confidence': qa.get('extraction_confidence', 1.0),
             'faq_id': qa.get('faq_id', f"faq_{len(faq_chunks)+1}"),
@@ -379,7 +390,8 @@ def load_faq_chunks(path: str) -> List[Dict]:
         }
         faq_chunks.append(chunk)
     
-    print(f"[Merger] Processed {len(faq_chunks)} FAQ chunks (priority: 75)")
+    boost_multiplier = priority / 50.0
+    print(f"[Merger] Processed {len(faq_chunks)} FAQ chunks (priority: {priority}, boost: {boost_multiplier:.1f}x)")
     return faq_chunks
 
 
@@ -414,11 +426,15 @@ def save_merged_chunks(chunks: List[Dict], output_path: str, generate_report: bo
             
             f.write(f"Total chunks: {len(chunks)}\n")
             if faq_chunks:
-                f.write(f"  FAQ: {len(faq_chunks)} (priority: 75)\n")
+                faq_priority = faq_chunks[0].get('priority', 60) if faq_chunks else 60
+                faq_boost = faq_priority / 50.0
+                f.write(f"  FAQ: {len(faq_chunks)} (priority: {faq_priority}, boost: {faq_boost:.1f}x)\n")
             if rulebook_chunks:
-                f.write(f"  Rulebook: {len(rulebook_chunks)} (priority: 50)\n")
+                f.write(f"  Rulebook: {len(rulebook_chunks)} (priority: 50, boost: 1.0x)\n")
             if forum_chunks:
-                f.write(f"  Forum: {len(forum_chunks)} (priority: 30)\n")
+                forum_priority = forum_chunks[0].get('priority', 30) if forum_chunks else 30
+                forum_boost = forum_priority / 50.0
+                f.write(f"  Forum: {len(forum_chunks)} (priority: {forum_priority}, boost: {forum_boost:.1f}x)\n")
             f.write("\n")
             
             # Quality breakdown for rulebook chunks
@@ -495,6 +511,8 @@ Examples:
     parser.add_argument('--forum', type=str, help='Path to forum Q&A pairs JSON file')
     parser.add_argument('-o', '--output', type=str, required=True, help='Output path for merged chunks')
     parser.add_argument('--similarity-threshold', type=float, default=80.0, help='Similarity threshold for deduplication (default: 80.0)')
+    parser.add_argument('--faq-priority', type=int, default=45, help='Priority for FAQ chunks (default: 45, forum=30, baseline rulebook=50)')
+    parser.add_argument('--forum-priority', type=int, default=30, help='Priority for forum chunks (default: 30, baseline rulebook=50)')
     parser.add_argument('--no-report', action='store_true', help='Skip generating quality report')
     
     args = parser.parse_args()
@@ -541,7 +559,7 @@ Examples:
         if not os.path.exists(args.faq):
             print(f"[Merger] Error: FAQ Q&A file not found: {args.faq}")
             sys.exit(1)
-        faq_chunks = load_faq_chunks(args.faq)
+        faq_chunks = load_faq_chunks(args.faq, priority=args.faq_priority)
         all_chunks.extend(faq_chunks)
     
     # Load forum chunks if specified
@@ -549,7 +567,7 @@ Examples:
         if not os.path.exists(args.forum):
             print(f"[Merger] Error: Forum Q&A file not found: {args.forum}")
             sys.exit(1)
-        forum_chunks = load_forum_chunks(args.forum)
+        forum_chunks = load_forum_chunks(args.forum, priority=args.forum_priority)
         all_chunks.extend(forum_chunks)
     
     # Summary
@@ -563,10 +581,11 @@ Examples:
     forum_count = sum(1 for c in all_chunks if c.get('source_type') == 'forum')
     
     if faq_count > 0:
-        print(f"  FAQ Q&A pairs: {faq_count} (priority: 75)")
+        faq_boost = args.faq_priority / 50.0
+        print(f"  FAQ Q&A pairs: {faq_count} (priority: {args.faq_priority}, boost: {faq_boost:.1f}x)")
     
     if rulebook_count > 0:
-        print(f"  Rulebook chunks: {rulebook_count} (priority: 50)")
+        print(f"  Rulebook chunks: {rulebook_count} (priority: 50, boost: 1.0x)")
         pdf_count = sum(1 for c in all_chunks if c.get('extraction_method') == 'pdf')
         ocr_count = sum(1 for c in all_chunks if c.get('extraction_method') == 'ocr')
         if pdf_count > 0:
@@ -575,9 +594,10 @@ Examples:
             print(f"    From OCR: {ocr_count} ({ocr_count/rulebook_count*100:.1f}%)")
     
     if forum_count > 0:
-        print(f"  Forum Q&A pairs: {forum_count} (priority: 30)")
+        forum_boost = args.forum_priority / 50.0
+        print(f"  Forum Q&A pairs: {forum_count} (priority: {args.forum_priority}, boost: {forum_boost:.1f}x)")
     
-    print(f"\nPriority order: FAQ (75) > Rulebook (50) > Forum (30)")
+    print(f"\nPriority order: FAQ ({args.faq_priority}) > Rulebook (50) > Forum ({args.forum_priority})")
     print(f"{'='*70}\n")
     
     # Save merged chunks

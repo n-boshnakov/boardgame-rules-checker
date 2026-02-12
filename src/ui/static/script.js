@@ -160,10 +160,29 @@ function displayAnswer(data) {
         debugRelatedQuestionItem.style.display = 'none';
     }
     
-    // Confidence bars (if dual-source)
-    if (data.dual_source_used && data.forum_confidence !== undefined && data.rulebook_confidence !== undefined) {
-        displayConfidenceBars(data.forum_confidence, data.rulebook_confidence, data.source);
+    // Confidence bars (if dual-source or FAQ comparison enabled)
+    console.log('[UI] Checking confidence comparison - source_comparison_enabled:', data.source_comparison_enabled);
+    console.log('[UI] dual_source_used:', data.dual_source_used, 'faq_enabled:', faqToggle.checked);
+    if (data.source_comparison_enabled) {
+        console.log('[UI] Displaying source confidence bars:', {
+            faq: data.faq_confidence,
+            rulebook: data.rulebook_confidence,
+            forum: data.forum_confidence,
+            source: data.source
+        });
+        // Determine which bars to show based on enabled features
+        const showFaq = faqToggle.checked;
+        const showForum = data.dual_source_used;
+        displaySourceConfidenceBars(
+            showFaq ? (data.faq_confidence || 0) : 0,
+            data.rulebook_confidence || 0,
+            showForum ? (data.forum_confidence || 0) : 0,
+            data.source,
+            showFaq,
+            showForum
+        );
     } else {
+        console.log('[UI] No confidence comparison to display');
         const confidenceBars = document.getElementById('confidence-bars');
         if (confidenceBars) {
             confidenceBars.style.display = 'none';
@@ -504,32 +523,68 @@ function displayRelatedForumQuestion(question) {
     section.style.display = 'block';
 }
 
-// Display confidence bars for dual-source comparison
-function displayConfidenceBars(forumConf, rulebookConf, selectedSource) {
+// Display confidence bars for all three sources
+function displaySourceConfidenceBars(faqConf, rulebookConf, forumConf, selectedSource, showFaq, showForum) {
     const section = document.getElementById('confidence-bars');
-    const forumBar = document.getElementById('forum-confidence-bar');
+    
+    // Get all three bar elements
+    const faqBarItem = document.getElementById('faq-bar-item');
+    const rulebookBarItem = document.getElementById('rulebook-bar-item');
+    const forumBarItem = document.getElementById('forum-bar-item');
+    
+    const faqBar = document.getElementById('faq-confidence-bar');
     const rulebookBar = document.getElementById('rulebook-confidence-bar');
-    const forumValue = document.getElementById('forum-confidence-value');
+    const forumBar = document.getElementById('forum-confidence-bar');
+    
+    const faqValue = document.getElementById('faq-confidence-value');
     const rulebookValue = document.getElementById('rulebook-confidence-value');
+    const forumValue = document.getElementById('forum-confidence-value');
     
-    const forumPct = (forumConf * 100).toFixed(0);
+    // Calculate percentages
+    const faqPct = (faqConf * 100).toFixed(0);
     const rulebookPct = (rulebookConf * 100).toFixed(0);
+    const forumPct = (forumConf * 100).toFixed(0);
     
-    forumBar.style.width = forumPct + '%';
+    // Update bars
+    faqBar.style.width = faqPct + '%';
     rulebookBar.style.width = rulebookPct + '%';
-    forumValue.textContent = forumPct + '%';
+    forumBar.style.width = forumPct + '%';
+    
+    faqValue.textContent = faqPct + '%';
     rulebookValue.textContent = rulebookPct + '%';
+    forumValue.textContent = forumPct + '%';
+    
+    // Color based on selected source
+    // Reset all to gray first
+    faqBar.style.backgroundColor = '#ccc';
+    rulebookBar.style.backgroundColor = '#ccc';
+    forumBar.style.backgroundColor = '#ccc';
     
     // Highlight selected source
-    if (selectedSource === 'forum') {
-        forumBar.style.backgroundColor = '#4CAF50';
-        rulebookBar.style.backgroundColor = '#ccc';
-    } else {
-        forumBar.style.backgroundColor = '#ccc';
-        rulebookBar.style.backgroundColor = '#2196F3';
+    if (selectedSource === 'faq') {
+        faqBar.style.backgroundColor = '#FF9800';  // Orange for FAQ
+    } else if (selectedSource === 'rulebook') {
+        rulebookBar.style.backgroundColor = '#2196F3';  // Blue for Rulebook
+    } else if (selectedSource === 'forum') {
+        forumBar.style.backgroundColor = '#4CAF50';  // Green for Forum
     }
     
+    // Show/hide bars based on which features are enabled
+    // Always show rulebook when comparison is active
+    faqBarItem.style.display = showFaq ? 'flex' : 'none';
+    rulebookBarItem.style.display = 'flex';  // Always show rulebook
+    forumBarItem.style.display = showForum ? 'flex' : 'none';
+    
     section.style.display = 'block';
+}
+
+// Legacy functions kept for backwards compatibility - can be removed later
+function displayDualSourceConfidenceBars(forumConf, rulebookConf, selectedSource) {
+    displaySourceConfidenceBars(0, rulebookConf, forumConf, selectedSource, false, true);
+}
+
+function displayFAQConfidenceBars(faqConf, rulebookConf, selectedSource) {
+    displaySourceConfidenceBars(faqConf, rulebookConf, 0, selectedSource, true, false);
 }
 
 // Helper function

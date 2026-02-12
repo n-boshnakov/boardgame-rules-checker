@@ -389,7 +389,7 @@ class RulebookRetriever:
             combined.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         
         # Apply priority-based score boosting (FAQ > Rulebook > Forum)
-        # Priority values: FAQ=75, Rulebook=50, Forum=30
+        # Priority values: FAQ=60, Rulebook=50, Forum=30
         # Boost multiplier: priority / 50 (base priority)
         # Skip in dual-source mode to allow fair comparison between sources
         if not skip_priority_boost:
