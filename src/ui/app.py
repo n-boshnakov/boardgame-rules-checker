@@ -196,7 +196,20 @@ def ask_question():
             rulebook_confidence = rulebook_results[0].get('score', 0.0) if rulebook_results else 0.0
             forum_confidence = forum_results[0].get('score', 0.0) if forum_results else 0.0
             
-            print(f"[UI] FAQ: {faq_confidence:.4f}, Rulebook: {rulebook_confidence:.4f}, Forum: {forum_confidence:.4f}")
+            print(f"[UI] Raw scores - FAQ: {faq_confidence:.4f}, Rulebook: {rulebook_confidence:.4f}, Forum: {forum_confidence:.4f}")
+            
+            # Normalize scores to 0-1 range for display
+            # Forum uses pure vector search: scores in [1.0, 2.0] range (cosineSimilarity() + 1.0)
+            # FAQ and Rulebook use hybrid search: scores already in appropriate range (0-2+)
+            # Only normalize forum scores from vector search
+            if forum_confidence > 1.0:
+                forum_confidence = max(0, min(1, forum_confidence - 1.0))
+            
+            # For hybrid search (FAQ, Rulebook), clamp to [0, 1] but don't shift
+            faq_confidence = max(0, min(1, faq_confidence))
+            rulebook_confidence = max(0, min(1, rulebook_confidence))
+            
+            print(f"[UI] Normalized - FAQ: {faq_confidence:.4f}, Rulebook: {rulebook_confidence:.4f}, Forum: {forum_confidence:.4f}")
             show_source_comparison = True
             print(f"[UI] show_source_comparison set to True")
         
@@ -210,9 +223,12 @@ def ask_question():
                 use_semantic=use_semantic,
                 include_faq=include_faq
             )
-            # Update confidences from dual-source (may differ slightly from pre-calculated)
-            forum_confidence = forum_conf if forum_conf > 0 else forum_confidence
-            rulebook_confidence = rulebook_conf if rulebook_conf > 0 else rulebook_confidence
+            # Update confidences from dual-source ONLY if comparison mode is not enabled
+            # When comparison is enabled, we already have accurate source-specific confidences
+            # The dual-source search may return combined scores (e.g., best of rulebook+FAQ)
+            if not show_source_comparison:
+                forum_confidence = forum_conf if forum_conf > 0 else forum_confidence
+                rulebook_confidence = rulebook_conf if rulebook_conf > 0 else rulebook_confidence
             print(f"[UI] Source selected: {answer_source}")
             
             # Extract forum metadata if source is forum
