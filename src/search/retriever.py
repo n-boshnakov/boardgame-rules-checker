@@ -14,7 +14,22 @@ MODEL_NAME = "BAAI/bge-m3"  # 1024 dims, better cross-domain
 
 class RulebookRetriever:
     def __init__(self, es_host: str = "http://localhost:9200", model_name: str = MODEL_NAME, use_reranker: bool = True, use_semantic_analysis: bool = False):
-        self.es = Elasticsearch(es_host, headers={"accept": "application/json", "content-type": "application/json"})
+        # Force v8 API compatibility by setting request headers directly on each call
+        # Using Elasticsearch 8.x client with API version compatibility
+        self.es = Elasticsearch(es_host)
+        
+        # Patch the client to add v8 compatibility headers to every request
+        original_perform_request = self.es.perform_request
+        def patched_perform_request(method, path, **kwargs):
+            # Force v8 API version on every request
+            if 'headers' not in kwargs:
+                kwargs['headers'] = {}
+            kwargs['headers']['accept'] = 'application/vnd.elasticsearch+json; compatible-with=8'
+            kwargs['headers']['content-type'] = 'application/vnd.elasticsearch+json; compatible-with=8'
+            return original_perform_request(method, path, **kwargs)
+        
+        self.es.perform_request = patched_perform_request
+        
         print(f"[Retriever] Loading embedding model: {model_name}")
         self.model = SentenceTransformer(model_name)
         self.use_reranker = use_reranker
@@ -141,7 +156,8 @@ class RulebookRetriever:
         # Normalize to unit vectors for cosine similarity stability
         return self.model.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
 
-    def _vector_search_script(self, query_vec: np.ndarray, size: int, section: Optional[str] = None, source_type: Optional[str] = None):
+    def _vector_search_script(self, query_vec: np.ndarray, size: int = 25, section: Optional[str] = None, source_type: Optional[str] = None, include_faq: bool = False, exclude_forum: bool = False):
+        """Execute vector search using script_score with cosine similarity."""
         script_query = {
             "script_score": {
                 "query": {"bool": {"must": []}},
@@ -155,12 +171,22 @@ class RulebookRetriever:
         if section:
             filters.append({"term": {"section": section}})
         if source_type:
+            # Specific source type requested
             filters.append({"term": {"source_type": source_type}})
+        else:
+            # No specific source type - apply include/exclude logic
+            must_not_filters = []
+            if not include_faq:
+                must_not_filters.append({"term": {"source_type": "faq"}})
+            if exclude_forum:
+                must_not_filters.append({"term": {"source_type": "forum"}})
+            if must_not_filters:
+                filters.append({"bool": {"must_not": must_not_filters}})
         if filters:
             script_query["script_score"]["query"]["bool"]["filter"] = filters
         return self.es.search(index=ES_INDEX, body={"size": size, "query": script_query})
 
-    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85, use_semantic: bool = None, source_type: Optional[str] = None, skip_entity_boosting: bool = False) -> List[Dict]:
+    def search(self, query: str, section: Optional[str] = None, top_k: int = 25, search_type: str = "hybrid", hybrid_weight: float = 0.85, use_semantic: bool = None, source_type: Optional[str] = None, skip_entity_boosting: bool = False, include_faq: bool = False, exclude_forum: bool = False, skip_priority_boost: bool = False) -> List[Dict]:
         # Spellcheck the query first
         corrected_query, corrections = self.spellcheck_question(query)
         if corrections:
@@ -202,7 +228,7 @@ class RulebookRetriever:
             return parsed
 
         if search_type == "vector":
-            res = self._vector_search_script(query_vec, size=top_k, section=section, source_type=source_type)
+            res = self._vector_search_script(query_vec, size=top_k, section=section, source_type=source_type, include_faq=include_faq, exclude_forum=exclude_forum)
             combined = parse_hits(res)
 
         elif search_type == "keyword":
@@ -224,6 +250,15 @@ class RulebookRetriever:
                 filters.append({"term": {"section": section}})
             if source_type:
                 filters.append({"term": {"source_type": source_type}})
+            else:
+                # Apply FAQ/forum filtering if specified
+                must_not_filters = []
+                if not include_faq:
+                    must_not_filters.append({"term": {"source_type": "faq"}})
+                if exclude_forum:
+                    must_not_filters.append({"term": {"source_type": "forum"}})
+                if must_not_filters:
+                    filters.append({"bool": {"must_not": must_not_filters}})
             if filters:
                 keyword_query["bool"]["filter"] = filters
             res = self.es.search(index=ES_INDEX, body={"size": top_k, "query": keyword_query})
@@ -232,7 +267,7 @@ class RulebookRetriever:
         elif search_type == "hybrid":
             # Vector side: fetch more for merging (balanced, low overhead)
             vec_size = max(top_k * 5, 25)
-            vector_res = self._vector_search_script(query_vec, size=vec_size, section=section, source_type=source_type)
+            vector_res = self._vector_search_script(query_vec, size=vec_size, section=section, source_type=source_type, include_faq=include_faq, exclude_forum=exclude_forum)
             vector_hits = vector_res.get("hits", {}).get("hits", [])
 
             # Keyword side: prefer phrasing + and-operator; same pool size
@@ -253,6 +288,15 @@ class RulebookRetriever:
                 filters.append({"term": {"section": section}})
             if source_type:
                 filters.append({"term": {"source_type": source_type}})
+            else:
+                # Apply FAQ/forum filtering if specified
+                must_not_filters = []
+                if not include_faq:
+                    must_not_filters.append({"term": {"source_type": "faq"}})
+                if exclude_forum:
+                    must_not_filters.append({"term": {"source_type": "forum"}})
+                if must_not_filters:
+                    filters.append({"bool": {"must_not": must_not_filters}})
             if filters:
                 keyword_query["bool"]["filter"] = filters
             keyword_res = self.es.search(index=ES_INDEX, body={"size": vec_size, "query": keyword_query})
@@ -344,6 +388,21 @@ class RulebookRetriever:
             # Re-sort after boosting
             combined.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         
+        # Apply priority-based score boosting (FAQ > Rulebook > Forum)
+        # Priority values: FAQ=60, Rulebook=50, Forum=30
+        # Boost multiplier: priority / 50 (base priority)
+        # Skip in dual-source mode to allow fair comparison between sources
+        if not skip_priority_boost:
+            for chunk in combined:
+                priority = chunk.get("priority", 50)
+                # Apply priority boost: higher priority sources get higher scores
+                priority_multiplier = priority / 50.0  # FAQ=1.5x, Rulebook=1.0x, Forum=0.6x
+                chunk["score"] = chunk.get("score", 0.0) * priority_multiplier
+                chunk["priority_multiplier"] = priority_multiplier
+            
+            # Re-sort after priority boosting
+            combined.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        
         # Apply entity-based score boosting for better semantic matching
         # Skip if explicitly disabled (e.g., in dual-source mode for rulebook to avoid unfair advantage)
         if should_use_semantic and self.semantic_analyzer and not skip_entity_boosting:
@@ -419,7 +478,7 @@ class RulebookRetriever:
         # Re-sort after entity boosting
         chunks.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     
-    def search_dual_source(self, query: str, top_k: int = 5, forum_weight: float = 0.45, use_semantic: bool = None) -> tuple:
+    def search_dual_source(self, query: str, top_k: int = 5, forum_weight: float = 0.45, use_semantic: bool = None, include_faq: bool = False) -> tuple:
         """Search both forum Q&A and rulebook, returning best source.
         
         Args:
@@ -427,6 +486,7 @@ class RulebookRetriever:
             top_k: Number of results per source
             forum_weight: Weight for forum results (0-1), rulebook gets (1-weight)
             use_semantic: Enable semantic query expansion (None = use instance default)
+            include_faq: Include FAQ results in search (default: True)
         
         Returns:
             Tuple: (chunks, source, forum_confidence, rulebook_confidence)
@@ -450,20 +510,27 @@ class RulebookRetriever:
             top_k=top_k, 
             search_type="vector",  # Pure semantic for question matching
             use_semantic=False,  # No query expansion for forum
-            source_type="forum"  # Filter to forum only
+            source_type="forum",  # Filter to forum only
+            include_faq=False,  # Forum search doesn't include FAQ
+            skip_priority_boost=True  # Skip priority boost for fair comparison
         )
         
-        # Search rulebook with hybrid approach
+        # Search rulebook + FAQ (if enabled) with hybrid approach
+        # When include_faq=True, search both rulebook and FAQ chunks together
+        # Exclude forum chunks to keep sources separate
         # Disable entity boosting for rulebook to prevent unfair advantage over forum
-        print(f"[DualSearch] Searching rulebook...")
+        print(f"[DualSearch] Searching rulebook{' + FAQ' if include_faq else ''}...")
         rulebook_results = self.search(
             query,
             top_k=top_k,
             search_type="hybrid",
             hybrid_weight=0.85,
             use_semantic=should_use_semantic,
-            source_type="rulebook",  # Filter to rulebook only
-            skip_entity_boosting=True  # Disable entity boosting in dual-source mode
+            source_type="rulebook" if not include_faq else None,  # Allow FAQ when enabled
+            skip_entity_boosting=True,  # Disable entity boosting in dual-source mode
+            include_faq=include_faq,
+            exclude_forum=True,  # Always exclude forum from rulebook search
+            skip_priority_boost=True  # Skip priority boost for fair comparison
         )
         
         # Calculate confidence scores
@@ -501,36 +568,54 @@ class RulebookRetriever:
         # This ensures forum has fair chance when questions match well
         
         if not forum_results and not rulebook_results:
-            return [], "none", 0.0, 0.0
+            return [], "none", 0.0, 0.0, None
+        
+        # Helper function to apply priority boost after source selection
+        def apply_priority_boost(results):
+            """Apply priority boost to results and re-sort."""
+            for chunk in results:
+                priority = chunk.get("priority", 50)
+                priority_multiplier = priority / 50.0  # FAQ=1.5x, Rulebook=1.0x, Forum=0.6x
+                chunk["score"] = chunk.get("score", 0.0) * priority_multiplier
+                chunk["priority_multiplier"] = priority_multiplier
+            return sorted(results, key=lambda x: x.get("score", 0.0), reverse=True)
         
         # Use weighted scores for decision
         if forum_weighted > rulebook_weighted:
             # Forum has higher weighted score - use it
             print(f"[DualSearch] Selected: Forum (weighted {forum_weighted:.3f} > {rulebook_weighted:.3f})")
+            forum_results = apply_priority_boost(forum_results)
             return forum_results, "forum", forum_confidence, rulebook_confidence, None
         elif rulebook_results:
             # Rulebook has higher or equal weighted score - use it
             print(f"[DualSearch] Selected: Rulebook (weighted {rulebook_weighted:.3f} >= {forum_weighted:.3f})")
             # Include top forum question for reference when rulebook is selected
             related_forum_question = forum_results[0].get('text') if forum_results else None
+            rulebook_results = apply_priority_boost(rulebook_results)
             return rulebook_results, "rulebook", forum_confidence, rulebook_confidence, related_forum_question
         elif forum_results:
             # Only forum has results
             print(f"[DualSearch] Selected: Forum (only source available)")
+            forum_results = apply_priority_boost(forum_results)
             return forum_results, "forum", forum_confidence, rulebook_confidence, None
         else:
             return [], "none", 0.0, 0.0, None
 
-    def generate_answer(self, question: str, chunks: List[Dict], use_semantic: bool = None) -> str:
+    def generate_answer(self, question: str, chunks: List[Dict], use_semantic: bool = None):
         """Generate answer by concatenating top relevant chunks (extractive method).
         
         Args:
             question: The question to answer
             chunks: Retrieved chunks
             use_semantic: Override for semantic sentence selection (None = auto-detect based on init)
+        
+        Returns:
+            Tuple of (answer_text, metadata_dict) where metadata contains:
+            - used_chunk_indices: List of chunk indices that contributed to the answer
+            - highest_score_chunk_idx: Index of highest-scoring chunk that was used
         """
         if not chunks:
-            return "No relevant information found."
+            return "No relevant information found.", {"used_chunk_indices": [], "highest_score_chunk_idx": None}
         
         # Determine if we should use semantic selection
         should_use_semantic = use_semantic if use_semantic is not None else (self.use_semantic_analysis and self.semantic_analyzer)
@@ -543,7 +628,7 @@ class RulebookRetriever:
                 return self._generate_answer_extractive(question, chunks)
         return self._generate_answer_extractive(question, chunks)
     
-    def _generate_answer_semantic(self, question: str, chunks: List[Dict]) -> str:
+    def _generate_answer_semantic(self, question: str, chunks: List[Dict]):
         """Generate answer using semantic analysis to understand question intent.
         
         Combines semantic understanding with sentence-level relevance scoring.
@@ -620,6 +705,7 @@ class RulebookRetriever:
         current_length = 0
         max_length = 700
         seen = set()
+        used_chunk_indices = []
         
         for candidate in sentence_candidates[:10]:
             sent = candidate['sentence']
@@ -632,11 +718,17 @@ class RulebookRetriever:
                 answer_parts.append(sent)
                 current_length += len(sent) + 1
                 seen.add(sent_norm)
+                used_chunk_indices.append(candidate['chunk_idx'])
                 
                 if len(answer_parts) >= 5:
                     break
         
-        return " ".join(answer_parts) if answer_parts else chunks[0].get("text", "No relevant information found.")[:700]
+        if answer_parts:
+            # Find highest-scoring chunk among those used
+            highest_score_idx = min(set(used_chunk_indices)) if used_chunk_indices else 0
+            return " ".join(answer_parts), {"used_chunk_indices": used_chunk_indices, "highest_score_chunk_idx": highest_score_idx}
+        else:
+            return chunks[0].get("text", "No relevant information found.")[:700], {"used_chunk_indices": [0], "highest_score_chunk_idx": 0}
     
     def _generate_definitional_answer(self, question: str, chunks: List[Dict], analysis: Dict) -> str:
         """Generate answer for definitional "what is" questions."""
@@ -696,6 +788,7 @@ class RulebookRetriever:
         current_length = 0
         max_length = 600
         seen = set()
+        used_chunk_indices = []
         
         for candidate in sentence_candidates[:8]:
             sent = candidate['sentence']
@@ -708,11 +801,16 @@ class RulebookRetriever:
                 answer_parts.append(sent)
                 current_length += len(sent) + 1
                 seen.add(sent_norm)
+                used_chunk_indices.append(candidate['chunk_idx'])
                 
                 if len(answer_parts) >= 4:
                     break
         
-        return " ".join(answer_parts) if answer_parts else chunks[0].get("text", "No relevant information found.")[:600]
+        if answer_parts:
+            highest_score_idx = min(set(used_chunk_indices)) if used_chunk_indices else 0
+            return " ".join(answer_parts), {"used_chunk_indices": used_chunk_indices, "highest_score_chunk_idx": highest_score_idx}
+        else:
+            return chunks[0].get("text", "No relevant information found.")[:600], {"used_chunk_indices": [0], "highest_score_chunk_idx": 0}
     
     def _generate_quantitative_answer(self, question: str, chunks: List[Dict], analysis: Dict) -> str:
         """Generate answer for quantitative questions (how many, how much)."""
@@ -758,6 +856,7 @@ class RulebookRetriever:
         current_length = 0
         max_length = 500
         seen = set()
+        used_chunk_indices = []
         
         for candidate in sentence_candidates[:6]:
             sent = candidate['sentence']
@@ -770,11 +869,16 @@ class RulebookRetriever:
                 answer_parts.append(sent)
                 current_length += len(sent) + 1
                 seen.add(sent_norm)
+                used_chunk_indices.append(candidate['chunk_idx'])
                 
                 if len(answer_parts) >= 3:
                     break
         
-        return " ".join(answer_parts) if answer_parts else chunks[0].get("text", "No relevant information found.")[:500]
+        if answer_parts:
+            highest_score_idx = min(set(used_chunk_indices)) if used_chunk_indices else 0
+            return " ".join(answer_parts), {"used_chunk_indices": used_chunk_indices, "highest_score_chunk_idx": highest_score_idx}
+        else:
+            return chunks[0].get("text", "No relevant information found.")[:500], {"used_chunk_indices": [0], "highest_score_chunk_idx": 0}
     
     def _generate_answer_sentence_level(self, question: str, chunks: List[Dict]) -> str:
         """Extract most relevant sentences from chunks using semantic similarity."""
@@ -831,7 +935,7 @@ class RulebookRetriever:
                 })
         
         if not sentence_candidates:
-            return "No relevant information found."
+            return "No relevant information found.", {"used_chunk_indices": [], "highest_score_chunk_idx": None}
         
         # Sort by score and select top sentences
         sentence_candidates.sort(key=lambda x: x['score'], reverse=True)
@@ -841,6 +945,7 @@ class RulebookRetriever:
         current_length = 0
         max_length = 600
         seen_sentences = set()
+        used_chunk_indices = []
         
         for candidate in sentence_candidates:
             sentence = candidate['sentence']
@@ -855,6 +960,7 @@ class RulebookRetriever:
                 answer_parts.append(sentence)
                 current_length += len(sentence) + 1
                 seen_sentences.add(sentence_normalized)
+                used_chunk_indices.append(candidate['chunk_idx'])
                 
                 # Stop after getting 3-5 high-quality sentences
                 if len(answer_parts) >= 5 or (len(answer_parts) >= 3 and current_length > 300):
@@ -862,20 +968,22 @@ class RulebookRetriever:
         
         if not answer_parts:
             # Fallback: use top chunk if no sentences passed filters
-            return chunks[0].get("text", "No relevant information found.")[:600]
+            return chunks[0].get("text", "No relevant information found.")[:600], {"used_chunk_indices": [0], "highest_score_chunk_idx": 0}
         
         answer = " ".join(answer_parts)
         answer = re.sub(r"\s+", " ", answer).strip()
-        return answer
+        highest_score_idx = min(set(used_chunk_indices)) if used_chunk_indices else 0
+        return answer, {"used_chunk_indices": used_chunk_indices, "highest_score_chunk_idx": highest_score_idx}
     
-    def _generate_answer_extractive(self, question: str, chunks: List[Dict]) -> str:
+    def _generate_answer_extractive(self, question: str, chunks: List[Dict]):
         """Legacy extractive method - kept for backwards compatibility."""
         # Build answer from chunks up to ~800 characters
         answer_parts = []
         current_length = 0
         max_length = 800
+        used_chunk_indices = []
         
-        for chunk in chunks[:15]:  # Use top 15 chunks for good coverage
+        for chunk_idx, chunk in enumerate(chunks[:15]):  # Use top 15 chunks for good coverage
             text = chunk.get("text", "")
             if not text:
                 continue
@@ -889,16 +997,20 @@ class RulebookRetriever:
                         if current_length + len(sent) <= max_length:
                             answer_parts.append(sent)
                             current_length += len(sent) + 1
+                            if chunk_idx not in used_chunk_indices:
+                                used_chunk_indices.append(chunk_idx)
                         else:
                             break
                 break
             else:
                 answer_parts.append(text)
                 current_length += len(text) + 1
+                used_chunk_indices.append(chunk_idx)
         
         answer = " ".join(answer_parts) if answer_parts else "No relevant information found."
         answer = re.sub(r"\s+", " ", answer).strip()
-        return answer
+        highest_score_idx = min(used_chunk_indices) if used_chunk_indices else 0
+        return answer, {"used_chunk_indices": used_chunk_indices, "highest_score_chunk_idx": highest_score_idx}
 
 
 if __name__ == "__main__":
@@ -930,7 +1042,10 @@ if __name__ == "__main__":
         sys.exit(0)
     
     # Generate answer
-    answer = retriever.generate_answer(question, chunks, use_semantic=use_semantic)
+    answer, metadata = retriever.generate_answer(question, chunks, use_semantic=use_semantic)
     
     print(f"Answer:\n{answer}")
+    if metadata.get('highest_score_chunk_idx') is not None:
+        highest_chunk = chunks[metadata['highest_score_chunk_idx']]
+        print(f"\nSource: Page {highest_chunk.get('page', 'N/A')}, Section: {highest_chunk.get('section', 'N/A')}")
     print(f"\n{'='*70}\n")

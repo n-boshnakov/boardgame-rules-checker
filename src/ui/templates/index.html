@@ -39,6 +39,10 @@
                                     <input type="checkbox" id="semantic-toggle" name="use_semantic">
                                     <span>🧠 Semantic Analysis</span>
                                 </label>
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="faq-toggle" name="include_faq">
+                                    <span>📋 Include Official FAQ</span>
+                                </label>
                             </div>
                             <button type="submit" id="ask-button">Ask Question</button>
                         </div>
@@ -63,6 +67,18 @@
                 
                 <div class="answer-content" id="answer-content">
                     <!-- Answer text will be inserted here -->
+                </div>
+                
+                <div id="faq-metadata" class="faq-metadata" style="display: none;">
+                    <h4>📋 Official FAQ Entry</h4>
+                    <div class="faq-details">
+                        <div class="faq-item">
+                            <strong>Original Question:</strong> <span id="faq-question" style="font-style: italic;">-</span>
+                        </div>
+                        <div class="faq-item">
+                            <strong>Section:</strong> <span id="faq-section">-</span>
+                        </div>
+                    </div>
                 </div>
                 
                 <div id="forum-metadata" class="forum-metadata" style="display: none;">
@@ -116,19 +132,26 @@
                         
                         <div id="confidence-bars" style="display: none;">
                             <h5>Source Confidence Comparison</h5>
-                            <div class="confidence-bar-item">
-                                <span class="confidence-label">Forum:</span>
-                                <div class="confidence-bar-bg">
-                                    <div class="confidence-bar-fill" id="forum-confidence-bar" style="width: 0%;"></div>
-                                </div>
-                                <span class="confidence-value" id="forum-confidence-value">0%</span>
-                            </div>
-                            <div class="confidence-bar-item">
+                            <div class="confidence-bar-item" id="rulebook-bar-item">
                                 <span class="confidence-label">Rulebook:</span>
                                 <div class="confidence-bar-bg">
                                     <div class="confidence-bar-fill" id="rulebook-confidence-bar" style="width: 0%;"></div>
                                 </div>
                                 <span class="confidence-value" id="rulebook-confidence-value">0%</span>
+                            </div>
+                            <div class="confidence-bar-item" id="faq-bar-item">
+                                <span class="confidence-label">FAQ:</span>
+                                <div class="confidence-bar-bg">
+                                    <div class="confidence-bar-fill" id="faq-confidence-bar" style="width: 0%;"></div>
+                                </div>
+                                <span class="confidence-value" id="faq-confidence-value">0%</span>
+                            </div>
+                            <div class="confidence-bar-item" id="forum-bar-item">
+                                <span class="confidence-label">Forum:</span>
+                                <div class="confidence-bar-bg">
+                                    <div class="confidence-bar-fill" id="forum-confidence-bar" style="width: 0%;"></div>
+                                </div>
+                                <span class="confidence-value" id="forum-confidence-value">0%</span>
                             </div>
                         </div>
                         

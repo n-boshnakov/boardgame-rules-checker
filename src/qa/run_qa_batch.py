@@ -45,9 +45,10 @@ def main(args):
     # Use hybrid search by default; enable semantic analysis only when flag is provided
     use_semantic = args.use_semantic_analysis
 
-    # Initialize retriever with reranking enabled (CrossEncoder)
+    # Initialize retriever with reranking (can be disabled for isolated tests)
+    use_reranker = not args.no_rerank if hasattr(args, 'no_rerank') else True
     retriever = RulebookRetriever(
-        use_reranker=True,
+        use_reranker=use_reranker,
         use_semantic_analysis=use_semantic
     )
     
@@ -73,7 +74,8 @@ def main(args):
                 question,
                 top_k=25,
                 forum_weight=args.forum_weight,
-                use_semantic=args.use_semantic_analysis
+                use_semantic=args.use_semantic_analysis,
+                include_faq=args.include_faq
             )
             
             if answer_source == 'none' or not chunks:
@@ -85,9 +87,10 @@ def main(args):
             if answer_source == 'forum':
                 # For forum, use the answer field from top chunk
                 predicted_answer = chunks[0].get('answer', 'No answer found.')
+                answer_metadata = {"used_chunk_indices": [0], "highest_score_chunk_idx": 0}
             else:
                 # For rulebook, generate answer from chunks
-                predicted_answer = retriever.generate_answer(question, chunks, use_semantic=args.use_semantic_analysis)
+                predicted_answer, answer_metadata = retriever.generate_answer(question, chunks, use_semantic=args.use_semantic_analysis)
             
             # Set source confidence
             source_confidence = forum_conf if answer_source == 'forum' else rulebook_conf
@@ -100,9 +103,10 @@ def main(args):
                 question, 
                 top_k=25, 
                 search_type="hybrid", 
-                hybrid_weight=0.85,
+                hybrid_weight=args.hybrid_weight,
                 use_semantic=use_semantic,
-                source_type="rulebook"  # Explicit filter to rulebook
+                source_type="rulebook",  # Explicit filter to rulebook
+                include_faq=args.include_faq
             )
             
             if not retrieved_chunks:
@@ -111,7 +115,7 @@ def main(args):
                 continue
             
             # Generate answer from retrieved chunks
-            predicted_answer = retriever.generate_answer(question, retrieved_chunks, use_semantic=use_semantic)
+            predicted_answer, answer_metadata = retriever.generate_answer(question, retrieved_chunks, use_semantic=use_semantic)
             answer_source = 'rulebook'
             source_confidence = retrieved_chunks[0].get('score', 0) if retrieved_chunks else 0
             forum_conf = 0
@@ -306,6 +310,20 @@ Examples:
         type=float,
         default=0.45,
         help="Weight for forum results in dual-source mode (0-1, default: 0.45 - slightly favors rulebook)"
+    )
+    parser.add_argument(
+        "--use-faq",
+        dest="include_faq",
+        action="store_true",
+        default=False,
+        help="Include FAQ results in search (default: False - hybrid search only)"
+    )
+    parser.add_argument(
+        "--no-rerank",
+        dest="no_rerank",
+        action="store_true",
+        default=False,
+        help="Disable cross-encoder reranking (for isolated hybrid weight testing)"
     )
     
     args = parser.parse_args()

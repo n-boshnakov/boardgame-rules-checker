@@ -301,6 +301,37 @@ button:disabled {
     white-space: pre-wrap;
 }
 
+/* FAQ metadata section */
+.faq-metadata {
+    background: linear-gradient(135deg, #f3e5f5, #e1bee7);
+    border-left: 4px solid #9C27B0;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 25px;
+}
+
+.faq-metadata h4 {
+    color: #7B1FA2;
+    margin-bottom: 15px;
+    font-size: 1.1em;
+}
+
+.faq-details {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.faq-item {
+    font-size: 0.95em;
+    color: #424242;
+}
+
+.faq-item strong {
+    color: #6A1B9A;
+    font-weight: 600;
+}
+
 /* Forum metadata section */
 .forum-metadata {
     background: linear-gradient(135deg, #e3f2fd, #bbdefb);
