@@ -296,12 +296,12 @@ Examples:
         help="Use semantic sentence selection for answer generation (experimental)"
     )
     parser.add_argument(
-        "--use_semantic_analysis",
+        "--use_semantic_analysis", "--use-semantic",
         action="store_true",
         help="Enable semantic query analysis (NLTK-based question understanding) - Optional NLP enhancement"
     )
     parser.add_argument(
-        "--use_dual_source",
+        "--use_dual_source", "--dual-source",
         action="store_true",
         help="Enable dual-source search (forum + rulebook) - Uses forum Q&A when more relevant"
     )
@@ -312,7 +312,7 @@ Examples:
         help="Weight for forum results in dual-source mode (0-1, default: 0.45 - slightly favors rulebook)"
     )
     parser.add_argument(
-        "--use-faq",
+        "--use_faq", "--use-faq",
         dest="include_faq",
         action="store_true",
         default=False,
